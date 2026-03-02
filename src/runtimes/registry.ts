@@ -6,6 +6,7 @@ import { ClaudeRuntime } from "./claude.ts";
 import { CodexRuntime } from "./codex.ts";
 import { CopilotRuntime } from "./copilot.ts";
 import { PiRuntime } from "./pi.ts";
+import { OpenCodeRuntime } from "./opencode.ts";
 import type { AgentRuntime } from "./types.ts";
 
 /** Registry of config-independent runtime adapters (name → factory). */
@@ -14,6 +15,7 @@ const runtimes = new Map<string, () => AgentRuntime>([
 	["codex", () => new CodexRuntime()],
 	["pi", () => new PiRuntime()],
 	["copilot", () => new CopilotRuntime()],
+	["opencode", () => new OpenCodeRuntime()],
 ]);
 
 /**
