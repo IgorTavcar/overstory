@@ -126,6 +126,7 @@ overstory/                        # This repo (the overstory tool itself)
       pi-guards.ts                # Pi guard extension generator (.pi/extensions/)
       copilot.ts                  # GitHub Copilot runtime adapter
       codex.ts                    # OpenAI Codex runtime adapter (headless, OS-level sandbox)
+      gemini.ts                   # Gemini CLI runtime adapter (Google's gemini coding agent)
     mulch/
       client.ts                   # mulch client (programmatic API for record/search/query, CLI wrapper for rest)
     merge/

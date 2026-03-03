@@ -6,7 +6,7 @@ Multi-agent orchestration for AI coding agents.
 [![CI](https://github.com/jayminwest/overstory/actions/workflows/ci.yml/badge.svg)](https://github.com/jayminwest/overstory/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Overstory turns a single coding session into a multi-agent team by spawning worker agents in git worktrees via tmux, coordinating them through a custom SQLite mail system, and merging their work back with tiered conflict resolution. A pluggable `AgentRuntime` interface lets you swap between runtimes — Claude Code, [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent), or your own adapter.
+Overstory turns a single coding session into a multi-agent team by spawning worker agents in git worktrees via tmux, coordinating them through a custom SQLite mail system, and merging their work back with tiered conflict resolution. A pluggable `AgentRuntime` interface lets you swap between runtimes — Claude Code, [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or your own adapter.
 
 > **Warning: Agent swarms are not a universal solution.** Do not deploy Overstory without understanding the risks of multi-agent orchestration — compounding error rates, cost amplification, debugging complexity, and merge conflicts are the normal case, not edge cases. Read [STEELMAN.md](STEELMAN.md) for a full risk analysis and the [Agentic Engineering Book](https://github.com/jayminwest/agentic-engineering-book) ([web version](https://jayminwest.com/agentic-engineering-book)) before using this tool in production.
 
@@ -18,6 +18,7 @@ Requires [Bun](https://bun.sh) v1.0+, git, and tmux. At least one supported agen
 - [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) (`pi` CLI)
 - [GitHub Copilot](https://github.com/features/copilot) (`copilot` CLI)
 - [Codex](https://github.com/openai/codex) (`codex` CLI)
+- [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini` CLI)
 
 ```bash
 bun install -g @os-eco/overstory-cli
@@ -175,6 +176,7 @@ Overstory is runtime-agnostic. The `AgentRuntime` interface (`src/runtimes/types
 | Pi | `pi` | `.pi/extensions/` guard extension | Active development |
 | Copilot | `copilot` | (none — `--allow-all-tools`) | Active development |
 | Codex | `codex` | OS-level sandbox (Seatbelt/Landlock) | Active development |
+| Gemini | `gemini` | `--sandbox` flag | Active development |
 
 ## How It Works
 
@@ -271,7 +273,7 @@ overstory/
     metrics/                      SQLite metrics + pricing + transcript parsing
     doctor/                       Health check modules (11 checks)
     insights/                     Session insight analyzer for auto-expertise
-    runtimes/                     AgentRuntime abstraction (registry + adapters: Claude, Pi, Copilot, Codex)
+    runtimes/                     AgentRuntime abstraction (registry + adapters: Claude, Pi, Copilot, Codex, Gemini)
     tracker/                      Pluggable task tracker (beads + seeds backends)
     mulch/                        mulch client (programmatic API + CLI wrapper)
     e2e/                          End-to-end lifecycle tests

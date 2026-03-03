@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-03-03
+
+### Added
+
+#### Gemini CLI Runtime Adapter
+- **Gemini CLI** (`gemini`) runtime adapter — full `AgentRuntime` implementation for Google's Gemini coding agent
+- TUI-based interactive mode via tmux (Ink-based TUI, similar to Copilot adapter)
+- Instruction file: `GEMINI.md` written to worktree root (agent overlay content)
+- Sandbox support via `--sandbox` flag, `--approval-mode yolo` for auto-approval
+- Headless mode: `gemini -p "prompt"` for one-shot calls
+- Transcript parsing from `--output-format stream-json` NDJSON events
+- Registered in runtime registry as `"gemini"`, available via `ov sling --runtime gemini`
+- 537 lines of test coverage in `src/runtimes/gemini.test.ts`
+
+#### Model Alias Expansion via Environment Variables
+- **`ANTHROPIC_DEFAULT_{ALIAS}_MODEL`** env vars — expand model aliases (`sonnet`, `opus`, `haiku`) to specific model IDs at runtime
+- `expandAliasFromEnv()` in `src/agents/manifest.ts` checks `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`
+- Applied during `resolveModel()` — env var values override default alias resolution
+- 169 lines of new test coverage in `src/agents/manifest.test.ts`
+
+### Fixed
+
+- **`.overstory/.gitignore`** — un-ignore `agent-defs/` contents so custom agent definitions are tracked by git
+- **CI lint** — fix import sort order in `sling.test.ts`
+
+### Testing
+
+- 2888 tests across 91 files (6768 `expect()` calls)
+
 ## [0.7.8] - 2026-03-02
 
 ### Added
@@ -1242,7 +1271,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Biome configuration for formatting and linting
 - TypeScript strict mode with `noUncheckedIndexedAccess`
 
-[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.7.8...HEAD
+[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.7.9...HEAD
+[0.7.9]: https://github.com/jayminwest/overstory/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/jayminwest/overstory/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/jayminwest/overstory/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/jayminwest/overstory/compare/v0.7.5...v0.7.6
