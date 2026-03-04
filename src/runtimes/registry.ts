@@ -6,6 +6,7 @@ import { ClaudeRuntime } from "./claude.ts";
 import { CodexRuntime } from "./codex.ts";
 import { CopilotRuntime } from "./copilot.ts";
 import { GeminiRuntime } from "./gemini.ts";
+import { OpenCodeRuntime } from "./opencode.ts";
 import { PiRuntime } from "./pi.ts";
 import type { AgentRuntime } from "./types.ts";
 
@@ -16,6 +17,7 @@ const runtimes = new Map<string, () => AgentRuntime>([
 	["pi", () => new PiRuntime()],
 	["copilot", () => new CopilotRuntime()],
 	["gemini", () => new GeminiRuntime()],
+	["opencode", () => new OpenCodeRuntime()],
 ]);
 
 /**
