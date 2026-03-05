@@ -202,12 +202,14 @@ const KILL_GRACE_PERIOD_MS = 2000;
  *          the session doesn't exist or the PID can't be determined
  */
 export async function getPanePid(name: string): Promise<number | null> {
+	// Explicitly target first window (overstory#73).
+	const target = `${name}:^`;
 	const { exitCode, stdout } = await runCommand([
 		"tmux",
 		"display-message",
 		"-p",
 		"-t",
-		name,
+		target,
 		"#{pane_pid}",
 	]);
 
@@ -455,11 +457,13 @@ export async function checkSessionState(name: string): Promise<SessionState> {
  * @returns The trimmed pane content, or null if capture fails
  */
 export async function capturePaneContent(name: string, lines = 50): Promise<string | null> {
+	// Explicitly target first window (overstory#73).
+	const target = `${name}:^`;
 	const { exitCode, stdout } = await runCommand([
 		"tmux",
 		"capture-pane",
 		"-t",
-		name,
+		target,
 		"-p",
 		"-S",
 		`-${lines}`,
@@ -545,11 +549,15 @@ export async function sendKeys(name: string, keys: string): Promise<void> {
 	// Claude Code's TUI to receive embedded Enter keystrokes which prevent
 	// the final "Enter" from triggering message submission (overstory-y2ob).
 	const flatKeys = keys.replace(/\n/g, " ");
+	// Explicitly target first window — bare session names can fail on some
+	// tmux builds (notably WSL2) with "can't find pane" (overstory#73).
+	// Use :^ (first window) instead of :0 to respect the user's base-index.
+	const target = `${name}:^`;
 	const { exitCode, stderr } = await runCommand([
 		"tmux",
 		"send-keys",
 		"-t",
-		name,
+		target,
 		flatKeys,
 		"Enter",
 	]);

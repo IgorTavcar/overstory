@@ -247,4 +247,9 @@ export class OpenCodeRuntime implements AgentRuntime {
 	buildEnv(model: ResolvedModel): Record<string, string> {
 		return model.env ?? {};
 	}
+
+	/** OpenCode does not produce transcript files. */
+	getTranscriptDir(_projectRoot: string): string | null {
+		return null;
+	}
 }
