@@ -51,6 +51,26 @@ async function runGit(
 }
 
 /**
+ * Get the list of tracked files with uncommitted changes (unstaged or staged).
+ * Returns deduplicated list of file paths. An empty list means the working tree is clean.
+ */
+async function checkDirtyWorkingTree(repoRoot: string): Promise<string[]> {
+	const { stdout: unstaged } = await runGit(repoRoot, ["diff", "--name-only"]);
+	const { stdout: staged } = await runGit(repoRoot, ["diff", "--name-only", "--cached"]);
+	const files = [
+		...unstaged
+			.trim()
+			.split("\n")
+			.filter((l) => l.length > 0),
+		...staged
+			.trim()
+			.split("\n")
+			.filter((l) => l.length > 0),
+	];
+	return [...new Set(files)];
+}
+
+/**
  * Get the list of conflicted files from `git diff --name-only --diff-filter=U`.
  */
 async function getConflictedFiles(repoRoot: string): Promise<string[]> {
@@ -591,6 +611,17 @@ export function createMergeResolver(options: {
 						branchName: canonicalBranch,
 					});
 				}
+			}
+
+			// Pre-check: abort early if working tree has uncommitted changes.
+			// When dirty tracked files exist, git merge refuses to start (exit 1, no conflict markers),
+			// causing all tiers to cascade with empty conflict lists and a misleading final error.
+			const dirtyFiles = await checkDirtyWorkingTree(repoRoot);
+			if (dirtyFiles.length > 0) {
+				throw new MergeError(
+					`Working tree has uncommitted changes to tracked files: ${dirtyFiles.join(", ")}. Commit or stash changes before running ov merge.`,
+					{ branchName: entry.branchName },
+				);
 			}
 
 			let lastTier: ResolutionTier = "clean-merge";

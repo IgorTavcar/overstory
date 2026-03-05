@@ -290,6 +290,105 @@ describe("createMergeResolver", () => {
 		});
 	});
 
+	describe("Dirty working tree pre-check", () => {
+		test("throws MergeError when unstaged changes exist on tracked files", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+				// Create a tracked file and then leave it modified (unstaged)
+				await commitFile(repoDir, "src/main.ts", "original content\n");
+				await runGitInDir(repoDir, ["checkout", "-b", "feature-branch"]);
+				await commitFile(repoDir, "src/feature.ts", "feature content\n");
+				await runGitInDir(repoDir, ["checkout", defaultBranch]);
+				// Modify a tracked file without staging
+				await Bun.write(`${repoDir}/src/main.ts`, "modified content\n");
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/feature.ts"],
+				});
+
+				const resolver = createMergeResolver({
+					aiResolveEnabled: false,
+					reimagineEnabled: false,
+				});
+
+				await expect(resolver.resolve(entry, defaultBranch, repoDir)).rejects.toThrow(MergeError);
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+
+		test("throws MergeError with message listing dirty files", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+				await commitFile(repoDir, "src/main.ts", "original content\n");
+				await runGitInDir(repoDir, ["checkout", "-b", "feature-branch"]);
+				await commitFile(repoDir, "src/feature.ts", "feature content\n");
+				await runGitInDir(repoDir, ["checkout", defaultBranch]);
+				await Bun.write(`${repoDir}/src/main.ts`, "modified content\n");
+
+				const entry = makeTestEntry({ branchName: "feature-branch" });
+				const resolver = createMergeResolver({ aiResolveEnabled: false, reimagineEnabled: false });
+
+				try {
+					await resolver.resolve(entry, defaultBranch, repoDir);
+					expect(true).toBe(false); // should not reach
+				} catch (err: unknown) {
+					expect(err).toBeInstanceOf(MergeError);
+					const mergeErr = err as MergeError;
+					expect(mergeErr.message).toContain("src/main.ts");
+					expect(mergeErr.message).toContain("Commit or stash");
+				}
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+
+		test("throws MergeError when staged but uncommitted changes exist", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+				await commitFile(repoDir, "src/main.ts", "original content\n");
+				await runGitInDir(repoDir, ["checkout", "-b", "feature-branch"]);
+				await commitFile(repoDir, "src/feature.ts", "feature content\n");
+				await runGitInDir(repoDir, ["checkout", defaultBranch]);
+				// Modify and stage (but don't commit)
+				await Bun.write(`${repoDir}/src/main.ts`, "staged but not committed\n");
+				await runGitInDir(repoDir, ["add", "src/main.ts"]);
+
+				const entry = makeTestEntry({ branchName: "feature-branch" });
+				const resolver = createMergeResolver({ aiResolveEnabled: false, reimagineEnabled: false });
+
+				await expect(resolver.resolve(entry, defaultBranch, repoDir)).rejects.toThrow(MergeError);
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+
+		test("clean working tree proceeds normally to Tier 1", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+				await setupCleanMerge(repoDir, defaultBranch);
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/feature-file.ts"],
+				});
+
+				const resolver = createMergeResolver({ aiResolveEnabled: false, reimagineEnabled: false });
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
+
+				expect(result.success).toBe(true);
+				expect(result.tier).toBe("clean-merge");
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+	});
+
 	describe("Tier 1 fail -> Tier 2: Auto-resolve", () => {
 		test("auto-resolves conflicts keeping incoming changes with correct content", async () => {
 			const repoDir = await createTempGitRepo();

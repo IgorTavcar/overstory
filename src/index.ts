@@ -49,7 +49,7 @@ import { ConfigError, OverstoryError, WorktreeError } from "./errors.ts";
 import { jsonError } from "./json.ts";
 import { brand, chalk, muted, setQuiet } from "./logging/color.ts";
 
-export const VERSION = "0.8.0";
+export const VERSION = "0.8.4";
 
 const rawArgs = process.argv.slice(2);
 
@@ -271,7 +271,7 @@ program
 		"Agent type: builder | scout | reviewer | lead | merger",
 		"builder",
 	)
-	.option("--name <name>", "Unique agent name")
+	.option("--name <name>", "Unique agent name (auto-generated if omitted)")
 	.option("--spec <path>", "Path to task spec file")
 	.option("--files <list>", "Exclusive file scope (comma-separated)")
 	.option("--parent <agent>", "Parent agent for hierarchy tracking")

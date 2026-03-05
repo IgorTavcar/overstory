@@ -98,6 +98,11 @@ export async function createSession(
 		exports.push(`export PATH="${overstoryBinDir}:$PATH"`);
 	}
 
+	// Clear Claude Code nesting guard so child agents can start.
+	// Claude Code >=2.1.66 sets CLAUDECODE=1 and refuses to launch when it's present.
+	// Overstory's agent spawning is intentional, not accidental nesting.
+	exports.push("unset CLAUDECODE CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT");
+
 	// Add any additional environment variables
 	if (env) {
 		for (const [key, value] of Object.entries(env)) {

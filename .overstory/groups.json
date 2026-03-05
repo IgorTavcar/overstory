@@ -643,5 +643,147 @@
 		"status": "completed",
 		"createdAt": "2026-03-02T16:04:31.559Z",
 		"completedAt": "2026-03-02T16:19:57.931Z"
+	},
+	{
+		"id": "group-e0bdc596",
+		"name": "coordinator-cross-project",
+		"memberIssueIds": [
+			"overstory-5e77",
+			"overstory-f710",
+			"overstory-bcb2",
+			"overstory-129d",
+			"overstory-1b2f",
+			"overstory-1fdc"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-03T19:04:44.759Z",
+		"completedAt": "2026-03-03T19:36:46.397Z"
+	},
+	{
+		"id": "group-7c319b82",
+		"name": "guard-rules-tests",
+		"memberIssueIds": [
+			"overstory-f490"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-03T19:57:58.313Z",
+		"completedAt": "2026-03-03T20:09:52.794Z"
+	},
+	{
+		"id": "group-46cdb065",
+		"name": "sapling-integration-w1",
+		"memberIssueIds": [
+			"overstory-3e89"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-03T21:59:42.927Z",
+		"completedAt": "2026-03-03T22:42:01.166Z"
+	},
+	{
+		"id": "group-a47fb105",
+		"name": "sapling-integration-w2",
+		"memberIssueIds": [
+			"overstory-3c41",
+			"overstory-f9c3"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-03T22:06:12.649Z",
+		"completedAt": "2026-03-03T22:42:01.281Z"
+	},
+	{
+		"id": "group-4490750a",
+		"name": "sapling-integration-w3",
+		"memberIssueIds": [
+			"overstory-ceab",
+			"overstory-8247"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-03T22:17:49.464Z",
+		"completedAt": "2026-03-03T22:42:01.397Z"
+	},
+	{
+		"id": "group-74945594",
+		"name": "sapling-integration-w4",
+		"memberIssueIds": [
+			"overstory-db8a"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-03T22:29:51.728Z",
+		"completedAt": "2026-03-03T22:42:01.483Z"
+	},
+	{
+		"id": "group-c2a64de7",
+		"name": "sapling-fix",
+		"memberIssueIds": [
+			"overstory-0c94"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-04T01:19:54.806Z",
+		"completedAt": "2026-03-04T01:36:00.205Z"
+	},
+	{
+		"id": "group-e422957b",
+		"name": "sapling-batch",
+		"memberIssueIds": [
+			"overstory-c12c",
+			"overstory-93d9",
+			"overstory-5916",
+			"overstory-2bae",
+			"overstory-a0ae",
+			"overstory-a846",
+			"overstory-d999"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-04T15:06:36.064Z",
+		"completedAt": "2026-03-04T15:15:32.596Z"
+	},
+	{
+		"id": "group-0289f80b",
+		"name": "sapling-headless-batch",
+		"memberIssueIds": [
+			"overstory-21e1",
+			"overstory-28ae",
+			"overstory-3dbd"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-04T15:35:08.094Z",
+		"completedAt": "2026-03-04T17:22:01.804Z"
+	},
+	{
+		"id": "group-4c04ef3c",
+		"name": "sapling-rpc-batch",
+		"memberIssueIds": [
+			"overstory-16f8"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-04T17:24:41.500Z",
+		"completedAt": "2026-03-04T17:54:55.244Z"
+	},
+	{
+		"id": "group-1bf47e64",
+		"name": "batch-6-issues",
+		"memberIssueIds": [
+			"overstory-2f10",
+			"overstory-eaf3",
+			"overstory-8507",
+			"overstory-3da4",
+			"overstory-8447",
+			"overstory-36cd"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-04T18:45:05.629Z",
+		"completedAt": "2026-03-04T18:54:16.183Z"
+	},
+	{
+		"id": "group-2c453c1c",
+		"name": "dispatch-batch-1",
+		"memberIssueIds": [
+			"overstory-1b04",
+			"overstory-aa00",
+			"overstory-d4d7"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-04T20:04:30.313Z",
+		"completedAt": "2026-03-04T21:24:26.989Z"
 	}
 ]

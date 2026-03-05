@@ -24,6 +24,8 @@ import { join } from "node:path";
 import { nudgeAgent } from "../commands/nudge.ts";
 import { createEventStore } from "../events/store.ts";
 import { createMulchClient } from "../mulch/client.ts";
+import { getConnection, removeConnection } from "../runtimes/connections.ts";
+import type { RuntimeConnection } from "../runtimes/types.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import type { AgentSession, EventStore, HealthCheck } from "../types.ts";
 import { isSessionAlive, killSession } from "../worktree/tmux.ts";
@@ -282,6 +284,10 @@ export interface DaemonOptions {
 		tier: 0 | 1,
 		triageSuggestion?: string,
 	) => Promise<void>;
+	/** Dependency injection for testing. Uses real getConnection when omitted. */
+	_getConnection?: (name: string) => RuntimeConnection | undefined;
+	/** Dependency injection for testing. Uses real removeConnection when omitted. */
+	_removeConnection?: (name: string) => void;
 }
 
 /**
@@ -345,6 +351,8 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 	const triage = options._triage ?? triageAgent;
 	const nudge = options._nudge ?? nudgeAgent;
 	const recordFailureFn = options._recordFailure ?? recordFailure;
+	const getConn = options._getConnection ?? getConnection;
+	const removeConn = options._removeConnection ?? removeConnection;
 
 	const overstoryDir = join(root, ".overstory");
 	const { store } = openSessionStore(overstoryDir);
@@ -385,6 +393,32 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 
 			// ZFC: Don't skip zombies. Re-check tmux liveness on every tick.
 			// A zombie with a live tmux session needs investigation, not silence.
+
+			// RPC health check: for headless agents with an active connection,
+			// call getState() to refresh lastActivity before evaluateHealth().
+			// This prevents false-positive stale/zombie classification for agents
+			// that are actively working but haven't updated lastActivity via hooks.
+			if (session.tmuxSession === "" && session.pid !== null) {
+				const conn = getConn(session.agentName);
+				if (conn) {
+					try {
+						const state = await Promise.race([
+							conn.getState(),
+							new Promise<never>((_, reject) =>
+								setTimeout(() => reject(new Error("getState timed out")), 5000),
+							),
+						]);
+						if (state.status === "idle" || state.status === "working") {
+							store.updateLastActivity(session.agentName);
+							// Refresh the session object so evaluateHealth sees updated lastActivity
+							session.lastActivity = new Date().toISOString();
+						}
+					} catch {
+						// getState() failed or timed out — remove stale connection
+						removeConn(session.agentName);
+					}
+				}
+			}
 
 			const tmuxAlive = await tmux.isSessionAlive(session.tmuxSession);
 			const check = evaluateHealth(session, tmuxAlive, thresholds);

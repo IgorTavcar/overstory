@@ -5,6 +5,14 @@ import type { OverstoryConfig, QualityGate, TaskTrackerBackend } from "./types.t
 // Module-level project root override (set by --project global flag)
 let _projectRootOverride: string | undefined;
 
+// Tracks warnings already emitted this process to avoid repeating on every loadConfig call.
+const _warnedOnce = new Set<string>();
+
+/** Clear the dedup warning set. Intended for tests only. */
+export function clearWarningsSeen(): void {
+	_warnedOnce.clear();
+}
+
 /** Override project root for all config resolution (used by --project global flag). */
 export function setProjectRootOverride(path: string): void {
 	_projectRootOverride = path;
@@ -698,6 +706,17 @@ function validateConfig(config: OverstoryConfig): void {
 		}
 	}
 
+	if (config.runtime?.capabilities) {
+		for (const [cap, runtimeName] of Object.entries(config.runtime.capabilities)) {
+			if (runtimeName !== undefined && (typeof runtimeName !== "string" || runtimeName === "")) {
+				throw new ValidationError(`runtime.capabilities.${cap} must be a non-empty string`, {
+					field: `runtime.capabilities.${cap}`,
+					value: runtimeName,
+				});
+			}
+		}
+	}
+
 	// models: validate each value.
 	// - Standard runtimes: aliases (sonnet/opus/haiku) or provider-prefixed refs.
 	// - Codex runtime: also allow bare model refs (e.g. gpt-5.3-codex).
@@ -720,9 +739,13 @@ function validateConfig(config: OverstoryConfig): void {
 				);
 			}
 			if (toolHeavyRoles.includes(role)) {
-				process.stderr.write(
-					`[overstory] WARNING: models.${role} uses non-Anthropic model '${model}'. Tool-use compatibility cannot be verified at config time.\n`,
-				);
+				const warnKey = `non-anthropic:${role}:${model}`;
+				if (!_warnedOnce.has(warnKey)) {
+					_warnedOnce.add(warnKey);
+					process.stderr.write(
+						`[overstory] WARNING: models.${role} uses non-Anthropic model '${model}'. Tool-use compatibility cannot be verified at config time.\n`,
+					);
+				}
 			}
 		} else {
 			// Must be a valid alias unless codex runtime is active.

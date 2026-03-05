@@ -98,6 +98,11 @@ export interface OverstoryConfig {
 		/** Default runtime adapter name (default: "claude"). */
 		default: string;
 		/**
+		 * Per-capability runtime overrides. Maps capability names (e.g. "coordinator", "builder")
+		 * to runtime adapter names. Lookup chain: explicit --runtime flag > capabilities[cap] > default > "claude".
+		 */
+		capabilities?: Partial<Record<string, string>>;
+		/**
 		 * Runtime adapter for headless one-shot AI calls (--print mode).
 		 * Used by merge/resolver.ts and watchdog/triage.ts.
 		 * Falls back to runtime.default when omitted.
@@ -343,6 +348,8 @@ export interface OverlayConfig {
 	trackerName?: string; // "seeds" or "beads"
 	/** Quality gate commands for the agent overlay. Falls back to defaults if undefined. */
 	qualityGates?: QualityGate[];
+	/** Relative path to the instruction file within the worktree (runtime-specific). Defaults to .claude/CLAUDE.md. */
+	instructionPath?: string;
 }
 
 // === Merge Queue ===
@@ -477,7 +484,11 @@ export type EventType =
 	| "mail_received"
 	| "spawn"
 	| "error"
-	| "custom";
+	| "custom"
+	| "turn_start"
+	| "turn_end"
+	| "progress"
+	| "result";
 
 /** Severity levels for events. */
 export type EventLevel = "debug" | "info" | "warn" | "error";

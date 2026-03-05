@@ -19,6 +19,7 @@ Requires [Bun](https://bun.sh) v1.0+, git, and tmux. At least one supported agen
 - [GitHub Copilot](https://github.com/features/copilot) (`copilot` CLI)
 - [Codex](https://github.com/openai/codex) (`codex` CLI)
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini` CLI)
+- [Sapling](https://github.com/jayminwest/sapling) (`sp` CLI)
 
 ```bash
 bun install -g @os-eco/overstory-cli
@@ -181,6 +182,7 @@ Overstory is runtime-agnostic. The `AgentRuntime` interface (`src/runtimes/types
 | Copilot | `copilot` | (none — `--allow-all-tools`) | Active development |
 | Codex | `codex` | OS-level sandbox (Seatbelt/Landlock) | Active development |
 | Gemini | `gemini` | `--sandbox` flag | Active development |
+| Sapling | `sp` | `.sapling/guards.json` | Active development |
 
 ## How It Works
 
@@ -280,7 +282,7 @@ overstory/
     metrics/                      SQLite metrics + pricing + transcript parsing
     doctor/                       Health check modules (11 checks)
     insights/                     Session insight analyzer for auto-expertise
-    runtimes/                     AgentRuntime abstraction (registry + adapters: Claude, Pi, Copilot, Codex, Gemini)
+    runtimes/                     AgentRuntime abstraction (registry + adapters: Claude, Pi, Copilot, Codex, Gemini, Sapling)
     tracker/                      Pluggable task tracker (beads + seeds backends)
     mulch/                        mulch client (programmatic API + CLI wrapper)
     e2e/                          End-to-end lifecycle tests

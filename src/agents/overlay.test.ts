@@ -875,6 +875,48 @@ describe("formatQualityGatesCapabilities", () => {
 	});
 });
 
+describe("INSTRUCTION_PATH placeholder", () => {
+	test("defaults to .claude/CLAUDE.md when instructionPath is not set", async () => {
+		const config = makeConfig({
+			baseDefinition: "Read your overlay at {{INSTRUCTION_PATH}} in your worktree.",
+		});
+		const output = await generateOverlay(config);
+
+		expect(output).toContain("Read your overlay at .claude/CLAUDE.md in your worktree.");
+		expect(output).not.toContain("{{INSTRUCTION_PATH}}");
+	});
+
+	test("uses custom instructionPath when set", async () => {
+		const config = makeConfig({
+			instructionPath: "SAPLING.md",
+			baseDefinition: "Read your overlay at {{INSTRUCTION_PATH}} in your worktree.",
+		});
+		const output = await generateOverlay(config);
+
+		expect(output).toContain("Read your overlay at SAPLING.md in your worktree.");
+		expect(output).not.toContain("{{INSTRUCTION_PATH}}");
+		expect(output).not.toContain(".claude/CLAUDE.md");
+	});
+
+	test("INSTRUCTION_PATH in base definition replaced throughout (multiple occurrences)", async () => {
+		const config = makeConfig({
+			instructionPath: "AGENTS.md",
+			baseDefinition: "Step 1: read {{INSTRUCTION_PATH}}.\nContext is in {{INSTRUCTION_PATH}}.",
+		});
+		const output = await generateOverlay(config);
+
+		expect(output).not.toContain("{{INSTRUCTION_PATH}}");
+		expect(output.split("AGENTS.md").length - 1).toBeGreaterThanOrEqual(2);
+	});
+
+	test("no unreplaced INSTRUCTION_PATH placeholders in final output", async () => {
+		const config = makeConfig({ instructionPath: "SAPLING.md" });
+		const output = await generateOverlay(config);
+
+		expect(output).not.toContain("{{INSTRUCTION_PATH}}");
+	});
+});
+
 describe("quality gate placeholders in base definitions", () => {
 	test("QUALITY_GATE_INLINE in base definition gets replaced", async () => {
 		const config = makeConfig({

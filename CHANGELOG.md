@@ -7,6 +7,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-03-04
+
+### Added
+
+#### Per-Capability Runtime Routing
+- **`runtime.capabilities` config field** — maps capability names (e.g. `builder`, `scout`, `coordinator`) to runtime adapter names, enabling heterogeneous fleets where different agent roles use different runtimes
+- `getRuntime()` now accepts a `capability` parameter; lookup chain: explicit `--runtime` flag > `capabilities[cap]` > `default` > `"claude"`
+- 4 tests covering capability routing, fallback, explicit override, and undefined capabilities
+
+#### Runtime-Agnostic Transcript Discovery
+- **`getTranscriptDir()` method** added to `AgentRuntime` interface — each runtime adapter now owns its transcript directory resolution instead of hardcoding Claude Code paths in the costs command
+- All 6 runtime adapters implement `getTranscriptDir()` (Claude returns project-specific path; others return `null`)
+
+#### Dynamic Instruction Path Discovery
+- `getKnownInstructionPaths()` in `agents.ts` now queries all registered runtimes via `getAllRuntimes()` instead of maintaining a hardcoded list, so new runtimes are automatically discovered
+
+### Fixed
+
+- **Dirty working tree merge guard** — `ov merge` now detects uncommitted changes to tracked files before attempting a merge and throws a clear error, preventing cascading failures through all 4 tiers with misleading empty conflict lists
+- 5 tests covering the dirty-tree detection in `resolver.test.ts`
+
+### Changed
+
+- **Decoupled Claude Code specifics** from costs, transcript, and agent discovery modules — `estimateCost` re-export removed from `transcript.ts` (import directly from `pricing.ts`), transcript dir resolution moved from costs command into runtime adapters, instruction path list derived from runtime registry
+
+### Testing
+
+- 3137 tests across 96 files (7420 `expect()` calls)
+
+## [0.8.3] - 2026-03-04
+
+### Added
+
+#### Auto-Generated Agent Names
+- **`ov sling` no longer requires `--name`** — when omitted, generates a unique name from `{capability}-{taskId}`, with `-2`, `-3` suffixes to avoid collisions against active sessions
+- `generateAgentName()` helper exported from `src/commands/sling.ts` with collision-avoidance logic
+
+#### Direct Scout/Builder Spawn
+- **Coordinator can now spawn scouts and builders directly** — previously only `lead` was allowed without `--parent`; scouts and builders are now also permitted for lightweight tasks that don't need a lead intermediary
+
+#### Runtime-Aware Instruction Path
+- **`{{INSTRUCTION_PATH}}` placeholder** in agent definitions — all agent `.md` files now use a runtime-resolved placeholder instead of hardcoded `.claude/CLAUDE.md`, enabling Codex (`AGENTS.md`), Sapling (`SAPLING.md`), and other runtimes to place overlays at their native instruction path
+- `instructionPath` field added to `OverlayConfig` type and `generateOverlay()` function
+
+### Fixed
+
+- **Codex runtime startup** — `buildSpawnCommand()` now uses interactive `codex` (not `codex exec`) so sessions stay alive in tmux; omits `--model` for Anthropic aliases that Codex CLI doesn't accept (thanks @vidhatanand)
+- **Zombie agent cleanup** — `ov stop` now cleans up zombie agents (marks them completed) instead of erroring with "already zombie"
+- **Headless stdout redirect** — `ov sling` always redirects headless agent stdout to file, preventing backpressure-induced zombie processes
+- **Config warning deduplication** — non-Anthropic model warnings in `validateConfig` now emit once per process instead of on every `loadConfig()` call
+- **Codex bare model refs** — `validateConfig` now accepts bare model references (e.g., `gpt-5.3-codex`) when the default runtime is `codex`, instead of requiring provider-prefixed format
+
+### Changed
+
+- Agent definition `.md` files updated to use `{{INSTRUCTION_PATH}}` placeholder (builder, lead, merger, reviewer, scout, supervisor, orchestrator)
+
+### Testing
+
+- 3130 tests across 96 files (7406 `expect()` calls)
+
+## [0.8.2] - 2026-03-04
+
+### Added
+
+#### RuntimeConnection Registry
+- **`src/runtimes/connections.ts`** — module-level connection registry for active `RuntimeConnection` instances, tracking RPC connections to headless agent processes (e.g., Sapling) keyed by agent name
+- `getConnection()`, `setConnection()`, `removeConnection()` for lifecycle management with automatic `close()` on removal
+- 6 tests in `src/runtimes/connections.test.ts`
+
+#### Sapling RPC Enhancements
+- **RuntimeConnection for SaplingRuntime** — full RPC support enabling direct stdin/stdout communication with Sapling agent processes
+- Model alias resolution in `buildEnv()` and `buildDirectSpawn()` — expands `sonnet`/`opus`/`haiku` aliases correctly
+
+### Fixed
+
+- **Headless backpressure zombie** — `ov sling` now redirects headless agent stdout/stderr to log files to prevent backpressure from causing zombie processes
+- **`deployConfig` guard write** — always writes `guards.json` even when overlay is undefined, preventing missing guard files for headless runtimes
+- **Sapling model alias resolution** — correct alias expansion in both `buildEnv()` and `buildDirectSpawn()` paths
+
+### Testing
+
+- 3116 tests across 96 files (7373 `expect()` calls)
+
+## [0.8.1] - 2026-03-04
+
+### Added
+
+#### Sapling Runtime Adapter
+- **Sapling** (`sp`) runtime adapter — full `AgentRuntime` implementation for the Sapling headless coding agent
+- Headless: runs as a Bun subprocess (no tmux TUI), communicates via NDJSON event stream on stdout (`--json`)
+- Instruction file: `SAPLING.md` written to worktree root (agent overlay content)
+- Guard deployment: `.sapling/guards.json` written from `guard-rules.ts` constants
+- Model alias resolution: expands `sonnet`/`opus`/`haiku` aliases via `ANTHROPIC_DEFAULT_*_MODEL` env vars
+- `buildEnv()` configures `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, provider routing
+- Registered in runtime registry as `"sapling"`, available via `ov sling --runtime sapling`
+- Sapling v0.1.5 event types added to `EventType` union and theme labels
+- 972 lines of test coverage in `src/runtimes/sapling.test.ts`
+
+#### Headless Agent Spawn Path
+- **Headless spawn** in `ov sling` — when `runtime.headless === true`, bypasses tmux entirely and spawns agents as direct Bun subprocesses
+- New `src/worktree/process.ts` module: `spawnHeadlessAgent()` for direct `Bun.spawn()` invocation, `HeadlessProcess` interface for PID/stdin/stdout management
+- `DirectSpawnOpts` and `AgentEvent` types added to `src/runtimes/types.ts`
+- Headless fields added to `AgentRuntime` interface
+
+#### Headless Agent Lifecycle Support
+- **`ov status`**, **`ov dashboard`**, **`ov inspect`** updated to handle tmux-less (headless) agents gracefully
+- **`ov stop`** updated with headless process termination via PID-based `killProcessTree()`
+- Health evaluation in `src/watchdog/health.ts` supports headless agent lifecycle (PID liveness instead of tmux session checks)
+
+### Fixed
+
+- **CLAUDECODE env clearing** — clear `CLAUDECODE` env var in tmux sessions for Claude Code >=2.1.66 compatibility
+- **Stale comment** — update `--mode rpc` comment to `--json` in `process.ts`
+
+### Changed
+
+- Runtime adapters grew from 5 to 6 (added Sapling)
+
+### Testing
+
+- 3089 tests across 95 files (7324 `expect()` calls)
+- New test files: `src/runtimes/sapling.test.ts`, `src/agents/guard-rules.test.ts`, `src/worktree/process.test.ts`, `src/commands/stop.test.ts`, `src/commands/status.test.ts`, `src/commands/dashboard.test.ts`, `src/watchdog/health.test.ts`
+
 ## [0.8.0] - 2026-03-03
 
 ### Added
@@ -1316,7 +1439,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Biome configuration for formatting and linting
 - TypeScript strict mode with `noUncheckedIndexedAccess`
 
-[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.8.4...HEAD
+[0.8.4]: https://github.com/jayminwest/overstory/compare/v0.8.3...v0.8.4
+[0.8.3]: https://github.com/jayminwest/overstory/compare/v0.8.2...v0.8.3
+[0.8.2]: https://github.com/jayminwest/overstory/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/jayminwest/overstory/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/jayminwest/overstory/compare/v0.7.9...v0.8.0
 [0.7.9]: https://github.com/jayminwest/overstory/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/jayminwest/overstory/compare/v0.7.7...v0.7.8

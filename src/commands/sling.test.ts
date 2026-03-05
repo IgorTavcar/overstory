@@ -20,6 +20,7 @@ import {
 	checkRunSessionLimit,
 	checkTaskLock,
 	extractMulchRecordIds,
+	generateAgentName,
 	getCurrentBranch,
 	inferDomainsFromFiles,
 	isRunningAsRoot,
@@ -342,6 +343,31 @@ describe("shouldShowScoutWarning", () => {
 	});
 });
 
+describe("generateAgentName", () => {
+	test("returns capability-taskId when no collision", () => {
+		expect(generateAgentName("builder", "overstory-2f10", [])).toBe("builder-overstory-2f10");
+	});
+
+	test("returns capability-taskId when takenNames is empty", () => {
+		expect(generateAgentName("scout", "task-123", [])).toBe("scout-task-123");
+	});
+
+	test("appends -2 when base name is taken", () => {
+		expect(generateAgentName("builder", "overstory-2f10", ["builder-overstory-2f10"])).toBe(
+			"builder-overstory-2f10-2",
+		);
+	});
+
+	test("skips taken suffixes and returns -3 when -2 is also taken", () => {
+		expect(
+			generateAgentName("builder", "overstory-2f10", [
+				"builder-overstory-2f10",
+				"builder-overstory-2f10-2",
+			]),
+		).toBe("builder-overstory-2f10-3");
+	});
+});
+
 /**
  * Tests for hierarchy validation in sling.
  *
@@ -352,14 +378,12 @@ describe("shouldShowScoutWarning", () => {
  */
 
 describe("validateHierarchy", () => {
-	test("rejects builder when parentAgent is null", () => {
-		expect(() => validateHierarchy(null, "builder", "test-builder", 0, false)).toThrow(
-			HierarchyError,
-		);
+	test("allows builder when parentAgent is null", () => {
+		expect(() => validateHierarchy(null, "builder", "test-builder", 0, false)).not.toThrow();
 	});
 
-	test("rejects scout when parentAgent is null", () => {
-		expect(() => validateHierarchy(null, "scout", "test-scout", 0, false)).toThrow(HierarchyError);
+	test("allows scout when parentAgent is null", () => {
+		expect(() => validateHierarchy(null, "scout", "test-scout", 0, false)).not.toThrow();
 	});
 
 	test("rejects reviewer when parentAgent is null", () => {
@@ -404,15 +428,15 @@ describe("validateHierarchy", () => {
 
 	test("error has correct fields and code", () => {
 		try {
-			validateHierarchy(null, "builder", "my-builder", 0, false);
+			validateHierarchy(null, "reviewer", "my-reviewer", 0, false);
 			expect.unreachable("should have thrown");
 		} catch (err) {
 			expect(err).toBeInstanceOf(HierarchyError);
 			const he = err as HierarchyError;
 			expect(he.code).toBe("HIERARCHY_VIOLATION");
-			expect(he.agentName).toBe("my-builder");
-			expect(he.requestedCapability).toBe("builder");
-			expect(he.message).toContain("builder");
+			expect(he.agentName).toBe("my-reviewer");
+			expect(he.requestedCapability).toBe("reviewer");
+			expect(he.message).toContain("reviewer");
 			expect(he.message).toContain("lead");
 		}
 	});

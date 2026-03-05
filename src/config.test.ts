@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	clearProjectRootOverride,
+	clearWarningsSeen,
 	DEFAULT_CONFIG,
 	DEFAULT_QUALITY_GATES,
 	loadConfig,
@@ -432,9 +433,11 @@ describe("validateConfig", () => {
 		tempDir = await mkdtemp(join(tmpdir(), "overstory-test-"));
 		const { mkdir } = await import("node:fs/promises");
 		await mkdir(join(tempDir, ".overstory"), { recursive: true });
+		clearWarningsSeen();
 	});
 
 	afterEach(async () => {
+		clearWarningsSeen();
 		await cleanupTempDir(tempDir);
 	});
 
@@ -747,6 +750,33 @@ models:
 		}
 		expect(capturedStderr).toContain("WARNING: models.builder uses non-Anthropic model");
 		expect(capturedStderr).toContain("openrouter/openai/gpt-4");
+	});
+
+	test("warns only once per role/model combination across multiple loadConfig calls", async () => {
+		await writeConfig(`
+providers:
+  openrouter:
+    type: gateway
+    baseUrl: https://openrouter.ai/api/v1
+    authTokenEnv: OPENROUTER_API_KEY
+models:
+  builder: openrouter/openai/gpt-4
+`);
+		const origWrite = process.stderr.write;
+		const stderrLines: string[] = [];
+		process.stderr.write = ((s: string | Uint8Array) => {
+			if (typeof s === "string") stderrLines.push(s);
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			await loadConfig(tempDir);
+			await loadConfig(tempDir);
+			await loadConfig(tempDir);
+		} finally {
+			process.stderr.write = origWrite;
+		}
+		const warnings = stderrLines.filter((l) => l.includes("WARNING: models.builder"));
+		expect(warnings.length).toBe(1);
 	});
 
 	test("does not warn for non-Anthropic model in non-tool-heavy role", async () => {
