@@ -1,6 +1,11 @@
 import { dirname, join, resolve } from "node:path";
 import { ConfigError, ValidationError } from "./errors.ts";
-import type { OverstoryConfig, QualityGate, TaskTrackerBackend } from "./types.ts";
+import type {
+	CoordinatorExitTriggers,
+	OverstoryConfig,
+	QualityGate,
+	TaskTrackerBackend,
+} from "./types.ts";
 
 // Module-level project root override (set by --project global flag)
 let _projectRootOverride: string | undefined;
@@ -82,6 +87,13 @@ export const DEFAULT_CONFIG: OverstoryConfig = {
 		staleThresholdMs: 300_000, // 5 minutes
 		zombieThresholdMs: 600_000, // 10 minutes
 		nudgeIntervalMs: 60_000, // 1 minute between progressive nudge stages
+	},
+	coordinator: {
+		exitTriggers: {
+			allAgentsDone: false,
+			taskTrackerEmpty: false,
+			onShutdownSignal: false,
+		} as CoordinatorExitTriggers,
 	},
 	models: {},
 	logging: {
@@ -659,6 +671,19 @@ function validateConfig(config: OverstoryConfig): void {
 						value: gate.description,
 					},
 				);
+			}
+		}
+	}
+
+	// coordinator.exitTriggers: validate all three flags are booleans if present
+	if (config.coordinator?.exitTriggers !== undefined) {
+		const et = config.coordinator.exitTriggers;
+		for (const key of ["allAgentsDone", "taskTrackerEmpty", "onShutdownSignal"] as const) {
+			if (typeof et[key] !== "boolean") {
+				throw new ValidationError(`coordinator.exitTriggers.${key} must be a boolean`, {
+					field: `coordinator.exitTriggers.${key}`,
+					value: et[key],
+				});
 			}
 		}
 	}

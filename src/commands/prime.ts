@@ -12,6 +12,7 @@ import { loadCheckpoint } from "../agents/checkpoint.ts";
 import { loadIdentity } from "../agents/identity.ts";
 import { createManifestLoader } from "../agents/manifest.ts";
 import { loadConfig } from "../config.ts";
+import { jsonOutput } from "../json.ts";
 import { printWarning } from "../logging/color.ts";
 import { createMetricsStore } from "../metrics/store.ts";
 import { createMulchClient } from "../mulch/client.ts";
@@ -23,6 +24,7 @@ import { OVERSTORY_GITIGNORE } from "./init.ts";
 export interface PrimeOptions {
 	agent?: string;
 	compact?: boolean;
+	json?: boolean;
 	/** Override the instruction path referenced in agent activation context. Defaults to ".claude/CLAUDE.md". */
 	instructionPath?: string;
 }
@@ -125,6 +127,7 @@ async function healGitignore(overstoryDir: string): Promise<void> {
 export async function primeCommand(opts: PrimeOptions): Promise<void> {
 	const agentName = opts.agent ?? null;
 	const compact = opts.compact ?? false;
+	const useJson = opts.json ?? false;
 	const instructionPath = opts.instructionPath ?? ".claude/CLAUDE.md";
 
 	// 1. Load config
@@ -147,12 +150,34 @@ export async function primeCommand(opts: PrimeOptions): Promise<void> {
 	}
 
 	// 4. Output context (orchestrator or agent)
-	if (agentName !== null) {
-		// === Agent priming ===
-		await outputAgentContext(config, agentName, compact, expertiseOutput, instructionPath);
+	if (useJson) {
+		// Capture context as text, wrap in JSON envelope
+		const capture: string[] = [];
+		const origWrite = process.stdout.write.bind(process.stdout);
+		process.stdout.write = (chunk: string | Uint8Array) => {
+			capture.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		};
+		try {
+			if (agentName !== null) {
+				await outputAgentContext(config, agentName, compact, expertiseOutput, instructionPath);
+			} else {
+				await outputOrchestratorContext(config, compact, expertiseOutput);
+			}
+		} finally {
+			process.stdout.write = origWrite;
+		}
+		jsonOutput("prime", {
+			agent: agentName,
+			compact,
+			context: capture.join(""),
+		});
 	} else {
-		// === Orchestrator priming ===
-		await outputOrchestratorContext(config, compact, expertiseOutput);
+		if (agentName !== null) {
+			await outputAgentContext(config, agentName, compact, expertiseOutput, instructionPath);
+		} else {
+			await outputOrchestratorContext(config, compact, expertiseOutput);
+		}
 	}
 }
 

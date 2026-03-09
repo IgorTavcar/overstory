@@ -815,13 +815,69 @@ export async function initCommand(opts: InitOptions): Promise<void> {
 		}
 	}
 
-	// 12. Output final result
+	// 12. Auto-commit scaffold files so ecosystem dirs are tracked before agents create branches.
+	// Without this, agent branches that add files to .mulch/.seeds/.canopy cause
+	// untracked-vs-tracked conflicts in ov merge (overstory-fe42).
+	let scaffoldCommitted = false;
+	const pathsToAdd: string[] = [OVERSTORY_DIR];
+
+	// Add .gitattributes if it exists
+	try {
+		await stat(join(projectRoot, ".gitattributes"));
+		pathsToAdd.push(".gitattributes");
+	} catch {
+		// not present — skip
+	}
+
+	// Add CLAUDE.md if it exists (may have been modified by onboard)
+	try {
+		await stat(join(projectRoot, "CLAUDE.md"));
+		pathsToAdd.push("CLAUDE.md");
+	} catch {
+		// not present — skip
+	}
+
+	// Add sibling tool dirs that were created
+	for (const tool of SIBLING_TOOLS) {
+		try {
+			await stat(join(projectRoot, tool.dotDir));
+			pathsToAdd.push(tool.dotDir);
+		} catch {
+			// not present — skip
+		}
+	}
+
+	const addResult = await spawner(["git", "add", ...pathsToAdd], { cwd: projectRoot });
+	if (addResult.exitCode !== 0) {
+		printWarning("Scaffold commit skipped", addResult.stderr.trim() || "git add failed");
+	} else {
+		// git diff --cached --quiet exits 0 if nothing staged, 1 if changes are staged
+		const diffResult = await spawner(["git", "diff", "--cached", "--quiet"], {
+			cwd: projectRoot,
+		});
+		if (diffResult.exitCode !== 0) {
+			// Changes are staged — commit them
+			const commitResult = await spawner(
+				["git", "commit", "-m", "chore: initialize overstory and ecosystem tools"],
+				{ cwd: projectRoot },
+			);
+			if (commitResult.exitCode === 0) {
+				printSuccess("Committed", "scaffold files");
+				scaffoldCommitted = true;
+			} else {
+				printWarning("Scaffold commit failed", commitResult.stderr.trim() || "git commit failed");
+			}
+		}
+	}
+
+	// 13. Output final result
 	if (opts.json) {
 		jsonOutput("init", {
 			project: projectName,
 			tools: toolResults,
 			onboard: onboardResults,
 			gitattributes: gitattrsUpdated,
+			scaffoldCommitted,
 		});
 		return;
 	}

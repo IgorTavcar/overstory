@@ -353,10 +353,11 @@ export function resolveModel(
 ): ResolvedModel {
 	const configModel = config.models[role];
 	const rawModel = configModel ?? manifest.agents[role]?.model ?? fallback;
+	const isExplicitOverride = configModel !== undefined;
 
 	// Simple alias — expand via env var if set (e.g. ANTHROPIC_DEFAULT_SONNET_MODEL)
 	if (MODEL_ALIASES.has(rawModel)) {
-		return { model: expandAliasFromEnv(rawModel) };
+		return { model: expandAliasFromEnv(rawModel), isExplicitOverride };
 	}
 
 	// Provider-prefixed: split on first "/" to get provider name and model ID
@@ -366,10 +367,10 @@ export function resolveModel(
 		const modelId = rawModel.substring(slashIdx + 1);
 		const providerEnv = resolveProviderEnv(providerName, modelId, config.providers);
 		if (providerEnv) {
-			return { model: DEFAULT_GATEWAY_ALIAS, env: providerEnv };
+			return { model: DEFAULT_GATEWAY_ALIAS, env: providerEnv, isExplicitOverride };
 		}
 	}
 
 	// Unknown format — return as-is (may be a direct model string)
-	return { model: rawModel };
+	return { model: rawModel, isExplicitOverride };
 }

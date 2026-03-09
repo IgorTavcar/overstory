@@ -20,6 +20,8 @@ export interface ProviderConfig {
 export interface ResolvedModel {
 	model: string;
 	env?: Record<string, string>;
+	/** True when the model was explicitly set via config.models[capability]. */
+	isExplicitOverride?: boolean;
 }
 
 /** Configuration for the Pi runtime's model alias expansion. */
@@ -36,6 +38,19 @@ export interface PiRuntimeConfig {
 export type TaskTrackerBackend = "auto" | "seeds" | "beads";
 
 // === Project Configuration ===
+
+/**
+ * Conditions that trigger automatic coordinator shutdown.
+ * All triggers default to false for backward compatibility.
+ */
+export interface CoordinatorExitTriggers {
+	/** Exit when all spawned agents have completed and their branches have been merged. */
+	allAgentsDone: boolean;
+	/** Exit when the task tracker reports no unblocked work (sd/bd ready returns empty). */
+	taskTrackerEmpty: boolean;
+	/** Exit when a typed shutdown mail is received from an external caller (e.g., greenhouse). */
+	onShutdownSignal: boolean;
+}
 
 /** A single quality gate command that agents must pass before reporting completion. */
 export interface QualityGate {
@@ -93,6 +108,10 @@ export interface OverstoryConfig {
 	logging: {
 		verbose: boolean;
 		redactSecrets: boolean;
+	};
+	coordinator?: {
+		/** Conditions that trigger automatic coordinator shutdown. */
+		exitTriggers: CoordinatorExitTriggers;
 	};
 	runtime?: {
 		/** Default runtime adapter name (default: "claude"). */

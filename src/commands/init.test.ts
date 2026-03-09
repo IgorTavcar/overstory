@@ -702,6 +702,143 @@ describe("initCommand: ecosystem bootstrap", () => {
 	});
 });
 
+describe("initCommand: scaffold commit", () => {
+	let tempDir: string;
+	let originalCwd: string;
+	let originalWrite: typeof process.stdout.write;
+
+	beforeEach(async () => {
+		tempDir = await createTempGitRepo();
+		originalCwd = process.cwd();
+		process.chdir(tempDir);
+		originalWrite = process.stdout.write;
+		process.stdout.write = (() => true) as typeof process.stdout.write;
+	});
+
+	afterEach(async () => {
+		process.chdir(originalCwd);
+		process.stdout.write = originalWrite;
+		await cleanupTempDir(tempDir);
+	});
+
+	test("git commit is called with scaffold message when git add succeeds and changes are staged", async () => {
+		const calls: string[][] = [];
+		const spawner: import("./init.ts").Spawner = async (args) => {
+			calls.push(args);
+			const key = args.join(" ");
+			// Sibling tool calls: all "not installed"
+			if (key.endsWith("--version")) return { exitCode: 1, stdout: "", stderr: "not found" };
+			// git add: success
+			if (key.startsWith("git add")) return { exitCode: 0, stdout: "", stderr: "" };
+			// git diff --cached --quiet: exit 1 means changes are staged
+			if (key.startsWith("git diff --cached --quiet"))
+				return { exitCode: 1, stdout: "", stderr: "" };
+			// git commit: success
+			if (key.startsWith("git commit")) return { exitCode: 0, stdout: "", stderr: "" };
+			return { exitCode: 1, stdout: "", stderr: "not found" };
+		};
+
+		await initCommand({ _spawner: spawner });
+
+		expect(calls).toContainEqual([
+			"git",
+			"commit",
+			"-m",
+			"chore: initialize overstory and ecosystem tools",
+		]);
+	});
+
+	test("git commit is NOT called when git diff reports nothing staged (exit 0)", async () => {
+		const calls: string[][] = [];
+		const spawner: import("./init.ts").Spawner = async (args) => {
+			calls.push(args);
+			const key = args.join(" ");
+			if (key.endsWith("--version")) return { exitCode: 1, stdout: "", stderr: "not found" };
+			if (key.startsWith("git add")) return { exitCode: 0, stdout: "", stderr: "" };
+			// exit 0 = nothing staged
+			if (key.startsWith("git diff --cached --quiet"))
+				return { exitCode: 0, stdout: "", stderr: "" };
+			if (key.startsWith("git commit")) return { exitCode: 0, stdout: "", stderr: "" };
+			return { exitCode: 1, stdout: "", stderr: "not found" };
+		};
+
+		await initCommand({ _spawner: spawner });
+
+		const commitCalls = calls.filter((c) => c[0] === "git" && c[1] === "commit");
+		expect(commitCalls).toHaveLength(0);
+	});
+
+	test("git commit failure does not throw — init still succeeds", async () => {
+		const spawner: import("./init.ts").Spawner = async (args) => {
+			const key = args.join(" ");
+			if (key.endsWith("--version")) return { exitCode: 1, stdout: "", stderr: "not found" };
+			if (key.startsWith("git add")) return { exitCode: 0, stdout: "", stderr: "" };
+			if (key.startsWith("git diff --cached --quiet"))
+				return { exitCode: 1, stdout: "", stderr: "" };
+			// commit fails
+			if (key.startsWith("git commit"))
+				return { exitCode: 1, stdout: "", stderr: "nothing to commit" };
+			return { exitCode: 1, stdout: "", stderr: "not found" };
+		};
+
+		// Should not throw
+		await expect(initCommand({ _spawner: spawner })).resolves.toBeUndefined();
+
+		// .overstory files should still be created
+		const configPath = join(tempDir, ".overstory", "config.yaml");
+		const exists = await Bun.file(configPath).exists();
+		expect(exists).toBe(true);
+	});
+
+	test("git add failure skips commit without throwing", async () => {
+		const calls: string[][] = [];
+		const spawner: import("./init.ts").Spawner = async (args) => {
+			calls.push(args);
+			const key = args.join(" ");
+			if (key.endsWith("--version")) return { exitCode: 1, stdout: "", stderr: "not found" };
+			// git add fails
+			if (key.startsWith("git add")) return { exitCode: 1, stdout: "", stderr: "git add failed" };
+			if (key.startsWith("git commit")) return { exitCode: 0, stdout: "", stderr: "" };
+			return { exitCode: 1, stdout: "", stderr: "not found" };
+		};
+
+		await expect(initCommand({ _spawner: spawner })).resolves.toBeUndefined();
+
+		// commit should NOT have been called since add failed
+		const commitCalls = calls.filter((c) => c[0] === "git" && c[1] === "commit");
+		expect(commitCalls).toHaveLength(0);
+	});
+
+	test("--json output includes scaffoldCommitted boolean", async () => {
+		const spawner: import("./init.ts").Spawner = async (args) => {
+			const key = args.join(" ");
+			if (key.endsWith("--version")) return { exitCode: 1, stdout: "", stderr: "not found" };
+			if (key.startsWith("git add")) return { exitCode: 0, stdout: "", stderr: "" };
+			if (key.startsWith("git diff --cached --quiet"))
+				return { exitCode: 1, stdout: "", stderr: "" };
+			if (key.startsWith("git commit")) return { exitCode: 0, stdout: "", stderr: "" };
+			return { exitCode: 1, stdout: "", stderr: "not found" };
+		};
+
+		let capturedOutput = "";
+		const restoreWrite = process.stdout.write;
+		process.stdout.write = ((chunk: unknown) => {
+			capturedOutput += String(chunk);
+			return true;
+		}) as typeof process.stdout.write;
+
+		await initCommand({ json: true, _spawner: spawner });
+
+		process.stdout.write = restoreWrite;
+
+		const jsonLine = capturedOutput.split("\n").find((line) => line.startsWith('{"success":'));
+		expect(jsonLine).toBeDefined();
+		const parsed = JSON.parse(jsonLine ?? "{}") as Record<string, unknown>;
+		expect(typeof parsed.scaffoldCommitted).toBe("boolean");
+		expect(parsed.scaffoldCommitted).toBe(true);
+	});
+});
+
 describe("initCommand: .gitattributes setup", () => {
 	let tempDir: string;
 	let originalCwd: string;

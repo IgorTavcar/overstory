@@ -424,39 +424,39 @@ export class SaplingRuntime implements AgentRuntime {
 	 * @returns Argv array for Bun.spawn — do not shell-interpolate
 	 */
 	buildDirectSpawn(opts: DirectSpawnOpts): string[] {
-		// Resolve the actual model name: if this is an alias (e.g. "sonnet") routed
-		// through a gateway, the real model ID is in the env vars. Sapling passes
-		// --model directly to the SDK, so it needs the actual model ID, not the alias.
-		let model = opts.model;
-		let resolved = false;
-		if (opts.env) {
-			const aliasKey = `ANTHROPIC_DEFAULT_${model.toUpperCase()}_MODEL`;
-			const envResolved = opts.env[aliasKey];
-			if (envResolved) {
-				model = envResolved;
-				resolved = true;
+		const argv = ["sp", "run"];
+		if (opts.model !== undefined) {
+			// Resolve the actual model name: if this is an alias (e.g. "sonnet") routed
+			// through a gateway, the real model ID is in the env vars. Sapling passes
+			// --model directly to the SDK, so it needs the actual model ID, not the alias.
+			let model = opts.model;
+			let resolved = false;
+			if (opts.env) {
+				const aliasKey = `ANTHROPIC_DEFAULT_${model.toUpperCase()}_MODEL`;
+				const envResolved = opts.env[aliasKey];
+				if (envResolved) {
+					model = envResolved;
+					resolved = true;
+				}
 			}
-		}
-		// Fallback: bare aliases (haiku/sonnet/opus) with no gateway env var → concrete model ID.
-		if (!resolved) {
-			const fallback = SAPLING_ALIAS_FALLBACKS[model];
-			if (fallback !== undefined) {
-				model = fallback;
+			// Fallback: bare aliases (haiku/sonnet/opus) with no gateway env var → concrete model ID.
+			if (!resolved) {
+				const fallback = SAPLING_ALIAS_FALLBACKS[model];
+				if (fallback !== undefined) {
+					model = fallback;
+				}
 			}
+			argv.push("--model", model);
 		}
-
-		return [
-			"sp",
-			"run",
-			"--model",
-			model,
+		argv.push(
 			"--json",
 			"--cwd",
 			opts.cwd,
 			"--system-prompt-file",
 			opts.instructionPath,
 			"Read SAPLING.md for your task assignment and begin immediately.",
-		];
+		);
+		return argv;
 	}
 
 	/**
@@ -667,6 +667,9 @@ export class SaplingRuntime implements AgentRuntime {
 			CLAUDECODE: "",
 			CLAUDE_CODE_SSE_PORT: "",
 			CLAUDE_CODE_ENTRYPOINT: "",
+			// Clear ANTHROPIC_API_KEY so the parent session's key doesn't leak
+			// into the sapling subprocess. Gateway providers re-set this below.
+			ANTHROPIC_API_KEY: "",
 		};
 
 		const providerEnv = model.env ?? {};

@@ -23,7 +23,7 @@ import { existsSync } from "node:fs";
 import { readdir, rm, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig } from "../config.ts";
-import { ValidationError } from "../errors.ts";
+import { AgentError, ValidationError } from "../errors.ts";
 import { createEventStore } from "../events/store.ts";
 import { jsonOutput } from "../json.ts";
 import { printHint, printSuccess } from "../logging/color.ts";
@@ -31,9 +31,16 @@ import { createMulchClient } from "../mulch/client.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import type { AgentSession, MulchDoctorResult, MulchPruneResult, MulchStatus } from "../types.ts";
 import { listWorktrees, removeWorktree } from "../worktree/manager.ts";
-import { killSession, listSessions } from "../worktree/tmux.ts";
+import {
+	isProcessAlive,
+	isSessionAlive,
+	killProcessTree,
+	killSession,
+	listSessions,
+} from "../worktree/tmux.ts";
 
 export interface CleanOptions {
+	agent?: string;
 	all?: boolean;
 	mail?: boolean;
 	sessions?: boolean;
@@ -395,6 +402,158 @@ async function checkMulchHealth(repoRoot: string): Promise<{
 	}
 }
 
+interface AgentCleanResult {
+	agentName: string;
+	tmuxKilled: boolean;
+	pidKilled: boolean;
+	worktreeRemoved: boolean;
+	branchDeleted: boolean;
+	agentDirCleared: boolean;
+	logsDirCleared: boolean;
+	sessionEndEventLogged: boolean;
+	markedCompleted: boolean;
+}
+
+/**
+ * Delete a git branch (best-effort).
+ */
+async function deleteBranch(repoRoot: string, branch: string): Promise<boolean> {
+	try {
+		const proc = Bun.spawn(["git", "branch", "-D", branch], {
+			cwd: repoRoot,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const exitCode = await proc.exited;
+		return exitCode === 0;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Perform targeted cleanup of a single agent.
+ *
+ * Kills its tmux session or process, removes its worktree, deletes its branch,
+ * clears its agent and log directories, logs a synthetic session-end event,
+ * and marks the session as completed.
+ */
+async function cleanSingleAgent(
+	agentName: string,
+	overstoryDir: string,
+	projectRoot: string,
+): Promise<AgentCleanResult> {
+	const result: AgentCleanResult = {
+		agentName,
+		tmuxKilled: false,
+		pidKilled: false,
+		worktreeRemoved: false,
+		branchDeleted: false,
+		agentDirCleared: false,
+		logsDirCleared: false,
+		sessionEndEventLogged: false,
+		markedCompleted: false,
+	};
+
+	const { store } = openSessionStore(overstoryDir);
+	let session: AgentSession | undefined;
+	try {
+		const found = store.getByName(agentName);
+		if (!found) {
+			throw new AgentError(`Agent "${agentName}" not found`, { agentName });
+		}
+		session = found;
+
+		// Log synthetic session-end event for non-completed agents
+		if (session.state !== "completed") {
+			try {
+				const eventsDbPath = join(overstoryDir, "events.db");
+				const eventStore = createEventStore(eventsDbPath);
+				try {
+					eventStore.insert({
+						runId: session.runId,
+						agentName: session.agentName,
+						sessionId: session.id,
+						eventType: "session_end",
+						toolName: null,
+						toolArgs: null,
+						toolDurationMs: null,
+						level: "info",
+						data: JSON.stringify({ reason: "clean --agent", capability: session.capability }),
+					});
+					result.sessionEndEventLogged = true;
+				} finally {
+					eventStore.close();
+				}
+			} catch {
+				// Best effort
+			}
+		}
+
+		const isHeadless = session.tmuxSession === "" && session.pid !== null;
+
+		// Kill tmux session or process
+		if (isHeadless && session.pid !== null) {
+			try {
+				if (isProcessAlive(session.pid)) {
+					await killProcessTree(session.pid);
+					result.pidKilled = true;
+				}
+			} catch {
+				// Best effort
+			}
+		} else if (session.tmuxSession) {
+			try {
+				if (await isSessionAlive(session.tmuxSession)) {
+					await killSession(session.tmuxSession);
+					result.tmuxKilled = true;
+				}
+			} catch {
+				// Best effort
+			}
+		}
+
+		// Remove worktree (force)
+		if (session.worktreePath) {
+			try {
+				await removeWorktree(projectRoot, session.worktreePath, {
+					force: true,
+					forceBranch: false,
+				});
+				result.worktreeRemoved = true;
+			} catch {
+				// Best effort
+			}
+		}
+
+		// Delete branch
+		if (session.branchName) {
+			result.branchDeleted = await deleteBranch(projectRoot, session.branchName);
+		}
+
+		// Mark completed
+		if (session.state !== "completed") {
+			store.updateState(agentName, "completed");
+			store.updateLastActivity(agentName);
+			result.markedCompleted = true;
+		}
+	} finally {
+		store.close();
+	}
+
+	// Clear agent identity directory
+	if (session) {
+		const agentDir = join(overstoryDir, "agents", agentName);
+		result.agentDirCleared = await clearDirectory(agentDir);
+
+		// Clear agent logs directory
+		const logsDir = join(overstoryDir, "logs", agentName);
+		result.logsDirCleared = await clearDirectory(logsDir);
+	}
+
+	return result;
+}
+
 /**
  * Entry point for `ov clean [flags]`.
  *
@@ -403,6 +562,15 @@ async function checkMulchHealth(repoRoot: string): Promise<{
 export async function cleanCommand(opts: CleanOptions): Promise<void> {
 	const json = opts.json ?? false;
 	const all = opts.all ?? false;
+	const agentName = opts.agent;
+
+	// --agent and --all are mutually exclusive
+	if (agentName && all) {
+		throw new ValidationError(
+			"--agent and --all are mutually exclusive. Use --agent <name> for single-agent cleanup or --all for full cleanup.",
+			{ field: "flags" },
+		);
+	}
 
 	const doWorktrees = all || (opts.worktrees ?? false);
 	const doBranches = all || (opts.branches ?? false);
@@ -414,11 +582,19 @@ export async function cleanCommand(opts: CleanOptions): Promise<void> {
 	const doSpecs = all || (opts.specs ?? false);
 
 	const anySelected =
-		doWorktrees || doBranches || doMail || doSessions || doMetrics || doLogs || doAgents || doSpecs;
+		agentName ||
+		doWorktrees ||
+		doBranches ||
+		doMail ||
+		doSessions ||
+		doMetrics ||
+		doLogs ||
+		doAgents ||
+		doSpecs;
 
 	if (!anySelected) {
 		throw new ValidationError(
-			"No cleanup targets specified. Use --all for full cleanup, or individual flags (--mail, --sessions, --metrics, --logs, --worktrees, --branches, --agents, --specs).",
+			"No cleanup targets specified. Use --all for full cleanup, --agent <name> for single-agent cleanup, or individual flags (--mail, --sessions, --metrics, --logs, --worktrees, --branches, --agents, --specs).",
 			{ field: "flags" },
 		);
 	}
@@ -426,6 +602,24 @@ export async function cleanCommand(opts: CleanOptions): Promise<void> {
 	const config = await loadConfig(process.cwd());
 	const root = config.project.root;
 	const overstoryDir = join(root, ".overstory");
+
+	// Per-agent cleanup: targeted single-agent cleanup
+	if (agentName) {
+		const agentResult = await cleanSingleAgent(agentName, overstoryDir, root);
+		if (json) {
+			jsonOutput("clean", { agent: agentResult });
+		} else {
+			printSuccess("Agent cleaned", agentName);
+			if (agentResult.tmuxKilled) process.stdout.write(`  Tmux session killed\n`);
+			if (agentResult.pidKilled) process.stdout.write(`  Process killed (PID)\n`);
+			if (agentResult.worktreeRemoved) process.stdout.write(`  Worktree removed\n`);
+			if (agentResult.branchDeleted)
+				process.stdout.write(`  Branch deleted: ${agentResult.agentName}\n`);
+			if (agentResult.agentDirCleared) process.stdout.write(`  Cleared agents/${agentName}/\n`);
+			if (agentResult.logsDirCleared) process.stdout.write(`  Cleared logs/${agentName}/\n`);
+		}
+		return;
+	}
 
 	const result: CleanResult = {
 		sessionEndEventsLogged: 0,

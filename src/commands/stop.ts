@@ -6,7 +6,10 @@
  * 2a. For TUI agents: killing its tmux session (if alive)
  * 2b. For headless agents (tmuxSession === ''): sending SIGTERM to the process tree
  * 3. Marking it as completed in the SessionStore
- * 4. Optionally removing its worktree (--clean-worktree)
+ * 4. Optionally removing its worktree and branch (--clean-worktree)
+ *
+ * Completed agents: ov stop <name> without --clean-worktree throws a helpful error.
+ * With --clean-worktree, completed agents skip the kill step and proceed to cleanup.
  */
 
 import { join } from "node:path";
@@ -41,6 +44,24 @@ export interface StopDeps {
 		isAlive: (pid: number) => boolean;
 		killTree: (pid: number) => Promise<void>;
 	};
+	_git?: {
+		deleteBranch: (repoRoot: string, branch: string) => Promise<boolean>;
+	};
+}
+
+/** Delete a git branch (best-effort, non-fatal). */
+async function deleteBranchBestEffort(repoRoot: string, branch: string): Promise<boolean> {
+	try {
+		const proc = Bun.spawn(["git", "branch", "-D", branch], {
+			cwd: repoRoot,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const exitCode = await proc.exited;
+		return exitCode === 0;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -48,7 +69,7 @@ export interface StopDeps {
  *
  * @param agentName - Name of the agent to stop
  * @param opts - Command options
- * @param deps - Optional dependency injection for testing (tmux, worktree, process)
+ * @param deps - Optional dependency injection for testing (tmux, worktree, process, git)
  */
 export async function stopCommand(
 	agentName: string,
@@ -69,6 +90,7 @@ export async function stopCommand(
 	const tmux = deps._tmux ?? { isSessionAlive, killSession };
 	const worktree = deps._worktree ?? { remove: removeWorktree };
 	const proc = deps._process ?? { isAlive: isProcessAlive, killTree: killProcessTree };
+	const git = deps._git ?? { deleteBranch: deleteBranchBestEffort };
 
 	const cwd = process.cwd();
 	const config = await loadConfig(cwd);
@@ -82,49 +104,69 @@ export async function stopCommand(
 			throw new AgentError(`Agent "${agentName}" not found`, { agentName });
 		}
 
-		if (session.state === "completed") {
-			throw new AgentError(`Agent "${agentName}" is already completed`, { agentName });
+		const isAlreadyCompleted = session.state === "completed";
+
+		// Completed agents without --clean-worktree: throw with helpful message
+		if (isAlreadyCompleted && !cleanWorktree) {
+			throw new AgentError(
+				`Agent "${agentName}" is already completed. Use --clean-worktree to remove its worktree.`,
+				{ agentName },
+			);
 		}
 
 		const isZombie = session.state === "zombie";
-
 		const isHeadless = session.tmuxSession === "" && session.pid !== null;
 
 		let tmuxKilled = false;
 		let pidKilled = false;
 
-		if (isHeadless && session.pid !== null) {
-			// Headless agent: kill via process tree instead of tmux
-			const alive = proc.isAlive(session.pid);
-			if (alive) {
-				await proc.killTree(session.pid);
-				pidKilled = true;
+		// Skip kill operations for already-completed agents (process/tmux already gone)
+		if (!isAlreadyCompleted) {
+			if (isHeadless && session.pid !== null) {
+				// Headless agent: kill via process tree instead of tmux
+				const alive = proc.isAlive(session.pid);
+				if (alive) {
+					await proc.killTree(session.pid);
+					pidKilled = true;
+				}
+			} else {
+				// TUI agent: kill via tmux session
+				const alive = await tmux.isSessionAlive(session.tmuxSession);
+				if (alive) {
+					await tmux.killSession(session.tmuxSession);
+					tmuxKilled = true;
+				}
 			}
-		} else {
-			// TUI agent: kill via tmux session
-			const alive = await tmux.isSessionAlive(session.tmuxSession);
-			if (alive) {
-				await tmux.killSession(session.tmuxSession);
-				tmuxKilled = true;
-			}
+
+			// Mark session as completed
+			store.updateState(agentName, "completed");
+			store.updateLastActivity(agentName);
 		}
 
-		// Mark session as completed
-		store.updateState(agentName, "completed");
-		store.updateLastActivity(agentName);
-
-		// Optionally remove worktree (best-effort, non-fatal)
+		// Optionally remove worktree and branch (best-effort, non-fatal)
 		let worktreeRemoved = false;
-		if (cleanWorktree && session.worktreePath) {
-			try {
-				await worktree.remove(projectRoot, session.worktreePath, {
-					force,
-					forceBranch: force,
-				});
-				worktreeRemoved = true;
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				if (!json) printWarning("Failed to remove worktree", msg);
+		let branchDeleted = false;
+		if (cleanWorktree) {
+			if (session.worktreePath) {
+				try {
+					await worktree.remove(projectRoot, session.worktreePath, {
+						force,
+						forceBranch: false,
+					});
+					worktreeRemoved = true;
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					if (!json) printWarning("Failed to remove worktree", msg);
+				}
+			}
+
+			// Delete the branch after removing the worktree (best-effort, non-fatal)
+			if (session.branchName) {
+				try {
+					branchDeleted = await git.deleteBranch(projectRoot, session.branchName);
+				} catch {
+					branchDeleted = false;
+				}
 			}
 		}
 
@@ -137,29 +179,39 @@ export async function stopCommand(
 				tmuxKilled,
 				pidKilled,
 				worktreeRemoved,
+				branchDeleted,
 				force,
 				wasZombie: isZombie,
+				wasCompleted: isAlreadyCompleted,
 			});
 		} else {
 			printSuccess("Agent stopped", agentName);
-			if (isHeadless) {
-				if (pidKilled) {
-					process.stdout.write(`  Process tree killed: PID ${session.pid}\n`);
+			if (!isAlreadyCompleted) {
+				if (isHeadless) {
+					if (pidKilled) {
+						process.stdout.write(`  Process tree killed: PID ${session.pid}\n`);
+					} else {
+						process.stdout.write(`  Process was already dead (PID ${session.pid})\n`);
+					}
 				} else {
-					process.stdout.write(`  Process was already dead (PID ${session.pid})\n`);
-				}
-			} else {
-				if (tmuxKilled) {
-					process.stdout.write(`  Tmux session killed: ${session.tmuxSession}\n`);
-				} else {
-					process.stdout.write(`  Tmux session was already dead\n`);
+					if (tmuxKilled) {
+						process.stdout.write(`  Tmux session killed: ${session.tmuxSession}\n`);
+					} else {
+						process.stdout.write(`  Tmux session was already dead\n`);
+					}
 				}
 			}
 			if (isZombie) {
 				process.stdout.write(`  Zombie agent cleaned up (state → completed)\n`);
 			}
+			if (isAlreadyCompleted) {
+				process.stdout.write(`  Agent was already completed (skipped kill)\n`);
+			}
 			if (cleanWorktree && worktreeRemoved) {
 				process.stdout.write(`  Worktree removed: ${session.worktreePath}\n`);
+			}
+			if (cleanWorktree && branchDeleted) {
+				process.stdout.write(`  Branch deleted: ${session.branchName}\n`);
 			}
 		}
 	} finally {

@@ -1977,3 +1977,260 @@ describe("buildCompletionMessage", () => {
 		expect(msg).toContain("3");
 	});
 });
+
+// === Bug fix tests: headless agent kill blast radius + stale detection ===
+
+describe("headless agent kill blast radius fix (Bug 1)", () => {
+	/**
+	 * Track PID kill calls without spawning real processes.
+	 * Also surfaces killTree calls so tests can assert on them.
+	 */
+	function processTracker(): {
+		isAlive: (pid: number) => boolean;
+		killTree: (pid: number) => Promise<void>;
+		killed: number[];
+	} {
+		const killed: number[] = [];
+		return {
+			isAlive: (pid: number) => {
+				try {
+					process.kill(pid, 0);
+					return true;
+				} catch {
+					return false;
+				}
+			},
+			killTree: async (pid: number) => {
+				killed.push(pid);
+			},
+			killed,
+		};
+	}
+
+	test("headless agent at escalation level 3 kills PID, not tmux session", async () => {
+		const nudgeIntervalMs = 60_000;
+		// stalledSince is 4 intervals ago — expectedLevel = floor(4) = 4, clamped to MAX (3)
+		const stalledSince = new Date(Date.now() - 4 * nudgeIntervalMs).toISOString();
+		const staleActivity = new Date(Date.now() - THRESHOLDS.staleThresholdMs * 2).toISOString();
+
+		const session = makeSession({
+			agentName: "headless-stalled",
+			tmuxSession: "", // headless
+			pid: process.pid, // alive PID — ZFC won't trigger direct terminate
+			state: "stalled",
+			lastActivity: staleActivity,
+			escalationLevel: 2,
+			stalledSince,
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		const proc = processTracker();
+		// tmux mock: isSessionAlive("") returns true — simulates prefix-match bug scenario
+		const tmuxMock = tmuxWithLiveness({ "": true });
+
+		await runDaemonTick({
+			root: tempRoot,
+			...THRESHOLDS,
+			nudgeIntervalMs,
+			tier1Enabled: false,
+			_tmux: tmuxMock,
+			_triage: triageAlways("extend"),
+			_process: proc,
+			_eventStore: null,
+			_recordFailure: async () => {},
+			_getConnection: () => undefined,
+			_removeConnection: () => {},
+			_tailerRegistry: new Map(),
+			_findLatestStdoutLog: async () => null,
+		});
+
+		// PID was killed via killTree, NOT via tmux killSession("")
+		expect(proc.killed).toContain(process.pid);
+		expect(tmuxMock.killed).not.toContain("");
+	});
+
+	test("headless agent direct terminate kills PID, not tmux", async () => {
+		// PID 999999 is virtually guaranteed not to exist — health check sees it as dead
+		const deadPid = 999999;
+		const session = makeSession({
+			agentName: "headless-dead-pid",
+			tmuxSession: "", // headless
+			pid: deadPid,
+			state: "working",
+			lastActivity: new Date().toISOString(),
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		const proc = processTracker();
+		// tmux mock: isSessionAlive("") returns true — would kill everything without the fix
+		const tmuxMock = tmuxWithLiveness({ "": true });
+
+		await runDaemonTick({
+			root: tempRoot,
+			...THRESHOLDS,
+			_tmux: tmuxMock,
+			_triage: triageAlways("extend"),
+			_process: proc,
+			_eventStore: null,
+			_recordFailure: async () => {},
+			_getConnection: () => undefined,
+			_removeConnection: () => {},
+			_tailerRegistry: new Map(),
+			_findLatestStdoutLog: async () => null,
+		});
+
+		// Should have attempted PID kill, NOT tmux killSession("")
+		expect(proc.killed).toContain(deadPid);
+		expect(tmuxMock.killed).not.toContain("");
+	});
+
+	test("triage terminate on headless agent kills PID, not tmux", async () => {
+		const nudgeIntervalMs = 60_000;
+		// stalledSince is 2.5 intervals ago — expectedLevel = floor(2.5) = 2 → triage fires
+		const stalledSince = new Date(Date.now() - 2.5 * nudgeIntervalMs).toISOString();
+		const staleActivity = new Date(Date.now() - THRESHOLDS.staleThresholdMs * 2).toISOString();
+
+		const session = makeSession({
+			agentName: "headless-triage-terminate",
+			tmuxSession: "", // headless
+			pid: process.pid, // alive
+			state: "stalled",
+			lastActivity: staleActivity,
+			escalationLevel: 1,
+			stalledSince,
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		const proc = processTracker();
+		const tmuxMock = tmuxWithLiveness({ "": true });
+
+		await runDaemonTick({
+			root: tempRoot,
+			...THRESHOLDS,
+			nudgeIntervalMs,
+			tier1Enabled: true,
+			_tmux: tmuxMock,
+			_triage: triageAlways("terminate"), // AI triage says terminate
+			_nudge: nudgeTracker().nudge,
+			_process: proc,
+			_eventStore: null,
+			_recordFailure: async () => {},
+			_getConnection: () => undefined,
+			_removeConnection: () => {},
+			_tailerRegistry: new Map(),
+			_findLatestStdoutLog: async () => null,
+		});
+
+		// Should have killed the PID, not the tmux session
+		expect(proc.killed).toContain(process.pid);
+		expect(tmuxMock.killed).not.toContain("");
+	});
+});
+
+describe("headless agent stale detection via events.db (Bug 2)", () => {
+	test("headless agent with recent events in events.db is not flagged stale", async () => {
+		const staleActivity = new Date(Date.now() - THRESHOLDS.staleThresholdMs * 2).toISOString();
+
+		const session = makeSession({
+			agentName: "headless-active",
+			tmuxSession: "", // headless
+			pid: process.pid, // alive
+			state: "working",
+			lastActivity: staleActivity, // stale — would trigger escalate without event fallback
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		const eventsDbPath = join(tempRoot, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+
+		try {
+			// Insert a recent event for this agent (within the stale threshold window)
+			eventStore.insert({
+				runId: null,
+				agentName: "headless-active",
+				sessionId: null,
+				eventType: "tool_end",
+				toolName: "Read",
+				toolArgs: null,
+				toolDurationMs: 100,
+				level: "info",
+				data: null,
+			});
+
+			const checks: HealthCheck[] = [];
+
+			await runDaemonTick({
+				root: tempRoot,
+				...THRESHOLDS,
+				onHealthCheck: (c) => checks.push(c),
+				_tmux: tmuxAllAlive(),
+				_triage: triageAlways("extend"),
+				_process: { isAlive: () => true, killTree: async () => {} },
+				_eventStore: eventStore,
+				_recordFailure: async () => {},
+				_getConnection: () => undefined,
+				_removeConnection: () => {},
+				_tailerRegistry: new Map(),
+				_findLatestStdoutLog: async () => null,
+			});
+
+			// Recent events found — lastActivity was refreshed, agent is NOT stalled
+			expect(checks).toHaveLength(1);
+			expect(checks[0]?.action).toBe("none");
+			expect(checks[0]?.state).toBe("working");
+
+			const reloaded = readSessionsFromStore(tempRoot);
+			expect(reloaded[0]?.state).toBe("working");
+		} finally {
+			eventStore.close();
+		}
+	});
+
+	test("headless agent with no recent events IS flagged stale", async () => {
+		const staleActivity = new Date(Date.now() - THRESHOLDS.staleThresholdMs * 2).toISOString();
+
+		const session = makeSession({
+			agentName: "headless-silent",
+			tmuxSession: "", // headless
+			pid: process.pid, // alive
+			state: "working",
+			lastActivity: staleActivity, // stale
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		const eventsDbPath = join(tempRoot, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+
+		try {
+			// No events inserted for this agent — event fallback finds nothing
+
+			const checks: HealthCheck[] = [];
+
+			await runDaemonTick({
+				root: tempRoot,
+				...THRESHOLDS,
+				onHealthCheck: (c) => checks.push(c),
+				_tmux: tmuxAllAlive(),
+				_triage: triageAlways("extend"),
+				_process: { isAlive: () => true, killTree: async () => {} },
+				_eventStore: eventStore,
+				_recordFailure: async () => {},
+				_getConnection: () => undefined,
+				_removeConnection: () => {},
+				_tailerRegistry: new Map(),
+				_findLatestStdoutLog: async () => null,
+			});
+
+			// No recent events — lastActivity stays stale, agent IS flagged stalled
+			expect(checks).toHaveLength(1);
+			expect(checks[0]?.action).toBe("escalate");
+		} finally {
+			eventStore.close();
+		}
+	});
+});

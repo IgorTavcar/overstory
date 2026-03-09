@@ -551,13 +551,17 @@ describe("resolveModel", () => {
 
 	test("returns manifest model when no config override", () => {
 		const config = makeConfig();
-		expect(resolveModel(config, baseManifest, "coordinator", "haiku")).toEqual({ model: "opus" });
+		expect(resolveModel(config, baseManifest, "coordinator", "haiku")).toEqual({
+			model: "opus",
+			isExplicitOverride: false,
+		});
 	});
 
 	test("config override takes precedence over manifest", () => {
 		const config = makeConfig({ coordinator: "sonnet" });
 		expect(resolveModel(config, baseManifest, "coordinator", "haiku")).toEqual({
 			model: "sonnet",
+			isExplicitOverride: true,
 		});
 	});
 
@@ -565,12 +569,16 @@ describe("resolveModel", () => {
 		const config = makeConfig();
 		expect(resolveModel(config, baseManifest, "unknown-role", "haiku")).toEqual({
 			model: "haiku",
+			isExplicitOverride: false,
 		});
 	});
 
 	test("config override works for roles not in manifest", () => {
 		const config = makeConfig({ supervisor: "opus" });
-		expect(resolveModel(config, baseManifest, "supervisor", "sonnet")).toEqual({ model: "opus" });
+		expect(resolveModel(config, baseManifest, "supervisor", "sonnet")).toEqual({
+			model: "opus",
+			isExplicitOverride: true,
+		});
 	});
 
 	test("returns gateway env for provider-prefixed model", () => {
@@ -592,6 +600,7 @@ describe("resolveModel", () => {
 				ANTHROPIC_API_KEY: "",
 				ANTHROPIC_DEFAULT_SONNET_MODEL: "openai/gpt-5.3",
 			},
+			isExplicitOverride: true,
 		});
 	});
 
@@ -618,6 +627,7 @@ describe("resolveModel", () => {
 					ANTHROPIC_DEFAULT_SONNET_MODEL: "openai/gpt-5.3",
 					ANTHROPIC_AUTH_TOKEN: "test-token-123",
 				},
+				isExplicitOverride: true,
 			});
 		} finally {
 			if (savedEnv === undefined) {
@@ -631,7 +641,7 @@ describe("resolveModel", () => {
 	test("unknown provider falls through to model as-is", () => {
 		const config = makeConfig({ coordinator: "unknown-provider/some-model" });
 		const result = resolveModel(config, baseManifest, "coordinator", "opus");
-		expect(result).toEqual({ model: "unknown-provider/some-model" });
+		expect(result).toEqual({ model: "unknown-provider/some-model", isExplicitOverride: true });
 	});
 
 	test("native provider returns model string without env", () => {
@@ -640,7 +650,7 @@ describe("resolveModel", () => {
 			{ "native-gw": { type: "native" } },
 		);
 		const result = resolveModel(config, baseManifest, "coordinator", "opus");
-		expect(result).toEqual({ model: "native-gw/claude-3-5-sonnet" });
+		expect(result).toEqual({ model: "native-gw/claude-3-5-sonnet", isExplicitOverride: true });
 	});
 
 	test("handles deeply nested model ID (slashes in model name)", () => {
@@ -675,6 +685,18 @@ describe("resolveModel", () => {
 		// Provider is "mygateway", model ID is everything after the first "/"
 		expect(result.model).toBe("sonnet");
 		expect(result.env?.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("org/model/version");
+	});
+
+	test("resolveModel sets isExplicitOverride true when config.models has override", () => {
+		const config = makeConfig({ builder: "opus" });
+		const result = resolveModel(config, baseManifest, "builder", "haiku");
+		expect(result.isExplicitOverride).toBe(true);
+	});
+
+	test("resolveModel sets isExplicitOverride false when using manifest default", () => {
+		const config = makeConfig();
+		const result = resolveModel(config, baseManifest, "coordinator", "haiku");
+		expect(result.isExplicitOverride).toBe(false);
 	});
 });
 
@@ -783,7 +805,10 @@ describe("resolveModel env var expansion", () => {
 		process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = "us.anthropic.claude-3-5-haiku-20241022-v1:0";
 		try {
 			const result = resolveModel(makeConfig(), baseManifest, "scout", "sonnet");
-			expect(result).toEqual({ model: "us.anthropic.claude-3-5-haiku-20241022-v1:0" });
+			expect(result).toEqual({
+				model: "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+				isExplicitOverride: false,
+			});
 		} finally {
 			if (saved === undefined) {
 				delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
@@ -798,7 +823,7 @@ describe("resolveModel env var expansion", () => {
 		delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
 		try {
 			const result = resolveModel(makeConfig(), baseManifest, "scout", "sonnet");
-			expect(result).toEqual({ model: "haiku" });
+			expect(result).toEqual({ model: "haiku", isExplicitOverride: false });
 		} finally {
 			if (saved !== undefined) {
 				process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = saved;
@@ -813,7 +838,7 @@ describe("resolveModel env var expansion", () => {
 			// Config overrides to a direct model string (not an alias)
 			const config = makeConfig({ builder: "claude-3-5-sonnet-20241022" });
 			const result = resolveModel(config, baseManifest, "builder", "haiku");
-			expect(result).toEqual({ model: "claude-3-5-sonnet-20241022" });
+			expect(result).toEqual({ model: "claude-3-5-sonnet-20241022", isExplicitOverride: true });
 		} finally {
 			if (saved === undefined) {
 				delete process.env.ANTHROPIC_DEFAULT_SONNET_MODEL;
@@ -829,7 +854,7 @@ describe("resolveModel env var expansion", () => {
 		try {
 			const config = makeConfig({ scout: "opus" });
 			const result = resolveModel(config, baseManifest, "scout", "haiku");
-			expect(result).toEqual({ model: "bedrock-opus-id" });
+			expect(result).toEqual({ model: "bedrock-opus-id", isExplicitOverride: true });
 		} finally {
 			if (saved === undefined) {
 				delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL;

@@ -118,8 +118,8 @@ export interface DirectSpawnOpts {
 	cwd: string;
 	/** Environment variables for the subprocess. */
 	env: Record<string, string>;
-	/** Model ref (alias or provider-qualified). */
-	model: string;
+	/** Model ref (alias or provider-qualified). When undefined, the runtime omits --model and lets the agent use its own config. */
+	model?: string;
 	/** Path to the instruction/overlay file for this agent. */
 	instructionPath: string;
 }

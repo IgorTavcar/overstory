@@ -17,13 +17,14 @@ import { join } from "node:path";
 import { AgentError, ValidationError } from "../errors.ts";
 import { createMailStore } from "../mail/store.ts";
 import { openSessionStore } from "../sessions/compat.ts";
-import { createRunStore } from "../sessions/store.ts";
+import { createRunStore, createSessionStore } from "../sessions/store.ts";
 import { cleanupTempDir, createTempGitRepo } from "../test-helpers.ts";
 import type { AgentSession } from "../types.ts";
 import {
 	askCoordinator,
 	buildCoordinatorBeacon,
 	type CoordinatorDeps,
+	checkComplete,
 	coordinatorCommand,
 	createCoordinatorCommand,
 	resolveAttach,
@@ -2102,5 +2103,423 @@ describe("askCoordinator", () => {
 		const cmd = createCoordinatorCommand({});
 		const subcommandNames = cmd.commands.map((c) => c.name());
 		expect(subcommandNames).toContain("ask");
+	});
+});
+
+// ─── checkComplete ─────────────────────────────────────────────────────────
+
+describe("checkComplete", () => {
+	test("all triggers disabled → complete: false", async () => {
+		// Default config has no coordinator section → all triggers default to false
+		const result = await checkComplete({ json: false });
+		expect(result.complete).toBe(false);
+		expect(result.triggers.allAgentsDone.enabled).toBe(false);
+		expect(result.triggers.taskTrackerEmpty.enabled).toBe(false);
+		expect(result.triggers.onShutdownSignal.enabled).toBe(false);
+	});
+
+	test("allAgentsDone met when all non-coordinator agents completed", async () => {
+		// Enable allAgentsDone in config
+		await Bun.write(
+			join(overstoryDir, "config.yaml"),
+			[
+				"project:",
+				"  name: test-project",
+				`  root: ${tempDir}`,
+				"  canonicalBranch: main",
+				"coordinator:",
+				"  exitTriggers:",
+				"    allAgentsDone: true",
+				"    taskTrackerEmpty: false",
+				"    onShutdownSignal: false",
+			].join("\n"),
+		);
+
+		// Write current-run.txt
+		const runId = `run-${Date.now()}`;
+		await Bun.write(join(overstoryDir, "current-run.txt"), runId);
+
+		// Create sessions.db with two completed agents
+		const store = createSessionStore(join(overstoryDir, "sessions.db"));
+		try {
+			const base: AgentSession = {
+				id: "s1",
+				agentName: "builder-1",
+				capability: "builder",
+				worktreePath: tempDir,
+				branchName: "feat/x",
+				taskId: "t1",
+				tmuxSession: "tmux-1",
+				state: "completed",
+				pid: null,
+				parentAgent: "coordinator",
+				depth: 1,
+				runId,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+				transcriptPath: null,
+			};
+			store.upsert(base);
+			store.upsert({ ...base, id: "s2", agentName: "builder-2" });
+		} finally {
+			store.close();
+		}
+
+		const result = await checkComplete({ json: false });
+		expect(result.triggers.allAgentsDone.enabled).toBe(true);
+		expect(result.triggers.allAgentsDone.met).toBe(true);
+		expect(result.complete).toBe(true);
+	});
+
+	test("allAgentsDone not met when agents still working", async () => {
+		await Bun.write(
+			join(overstoryDir, "config.yaml"),
+			[
+				"project:",
+				"  name: test-project",
+				`  root: ${tempDir}`,
+				"  canonicalBranch: main",
+				"coordinator:",
+				"  exitTriggers:",
+				"    allAgentsDone: true",
+				"    taskTrackerEmpty: false",
+				"    onShutdownSignal: false",
+			].join("\n"),
+		);
+
+		const runId = `run-${Date.now()}`;
+		await Bun.write(join(overstoryDir, "current-run.txt"), runId);
+
+		const store = createSessionStore(join(overstoryDir, "sessions.db"));
+		try {
+			const session: AgentSession = {
+				id: "s1",
+				agentName: "builder-1",
+				capability: "builder",
+				worktreePath: tempDir,
+				branchName: "feat/x",
+				taskId: "t1",
+				tmuxSession: "tmux-1",
+				state: "working",
+				pid: null,
+				parentAgent: "coordinator",
+				depth: 1,
+				runId,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+				transcriptPath: null,
+			};
+			store.upsert(session);
+		} finally {
+			store.close();
+		}
+
+		const result = await checkComplete({ json: false });
+		expect(result.triggers.allAgentsDone.enabled).toBe(true);
+		expect(result.triggers.allAgentsDone.met).toBe(false);
+		expect(result.complete).toBe(false);
+	});
+
+	test("allAgentsDone filters out coordinator session", async () => {
+		await Bun.write(
+			join(overstoryDir, "config.yaml"),
+			[
+				"project:",
+				"  name: test-project",
+				`  root: ${tempDir}`,
+				"  canonicalBranch: main",
+				"coordinator:",
+				"  exitTriggers:",
+				"    allAgentsDone: true",
+				"    taskTrackerEmpty: false",
+				"    onShutdownSignal: false",
+			].join("\n"),
+		);
+
+		const runId = `run-${Date.now()}`;
+		await Bun.write(join(overstoryDir, "current-run.txt"), runId);
+
+		const store = createSessionStore(join(overstoryDir, "sessions.db"));
+		try {
+			// coordinator session (should be excluded)
+			store.upsert({
+				id: "coord",
+				agentName: "coordinator",
+				capability: "coordinator",
+				worktreePath: tempDir,
+				branchName: "main",
+				taskId: "",
+				tmuxSession: "tmux-coord",
+				state: "working",
+				pid: null,
+				parentAgent: null,
+				depth: 0,
+				runId,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+				transcriptPath: null,
+			});
+			// worker session that is completed
+			store.upsert({
+				id: "worker",
+				agentName: "builder-1",
+				capability: "builder",
+				worktreePath: tempDir,
+				branchName: "feat/x",
+				taskId: "t1",
+				tmuxSession: "tmux-w",
+				state: "completed",
+				pid: null,
+				parentAgent: "coordinator",
+				depth: 1,
+				runId,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+				transcriptPath: null,
+			});
+		} finally {
+			store.close();
+		}
+
+		const result = await checkComplete({ json: false });
+		expect(result.triggers.allAgentsDone.enabled).toBe(true);
+		// coordinator is filtered out; only the builder counts → all done
+		expect(result.triggers.allAgentsDone.met).toBe(true);
+		expect(result.complete).toBe(true);
+	});
+
+	test("onShutdownSignal met when shutdown mail exists", async () => {
+		await Bun.write(
+			join(overstoryDir, "config.yaml"),
+			[
+				"project:",
+				"  name: test-project",
+				`  root: ${tempDir}`,
+				"  canonicalBranch: main",
+				"coordinator:",
+				"  exitTriggers:",
+				"    allAgentsDone: false",
+				"    taskTrackerEmpty: false",
+				"    onShutdownSignal: true",
+			].join("\n"),
+		);
+
+		// Insert a shutdown message into mail.db
+		const mailStore = createMailStore(join(overstoryDir, "mail.db"));
+		try {
+			mailStore.insert({
+				id: "",
+				from: "greenhouse",
+				to: "coordinator",
+				subject: "shutdown",
+				body: "All work done, please shutdown",
+				type: "status",
+				priority: "normal",
+				threadId: null,
+				payload: null,
+			});
+		} finally {
+			mailStore.close();
+		}
+
+		const result = await checkComplete({ json: false });
+		expect(result.triggers.onShutdownSignal.enabled).toBe(true);
+		expect(result.triggers.onShutdownSignal.met).toBe(true);
+		expect(result.complete).toBe(true);
+	});
+
+	test("overall complete false when only one of two enabled triggers is met", async () => {
+		// Enable allAgentsDone + onShutdownSignal; satisfy only onShutdownSignal
+		await Bun.write(
+			join(overstoryDir, "config.yaml"),
+			[
+				"project:",
+				"  name: test-project",
+				`  root: ${tempDir}`,
+				"  canonicalBranch: main",
+				"coordinator:",
+				"  exitTriggers:",
+				"    allAgentsDone: true",
+				"    taskTrackerEmpty: false",
+				"    onShutdownSignal: true",
+			].join("\n"),
+		);
+
+		// Write current-run.txt but no sessions → allAgentsDone not met (empty run)
+		const runId = `run-${Date.now()}`;
+		await Bun.write(join(overstoryDir, "current-run.txt"), runId);
+		// Sessions DB will be created empty — no agents → allAgentsDone.met = false (length === 0)
+
+		// Insert shutdown mail so onShutdownSignal is met
+		const mailStore = createMailStore(join(overstoryDir, "mail.db"));
+		try {
+			mailStore.insert({
+				id: "",
+				from: "operator",
+				to: "coordinator",
+				subject: "shutdown now",
+				body: "Please shutdown",
+				type: "status",
+				priority: "normal",
+				threadId: null,
+				payload: null,
+			});
+		} finally {
+			mailStore.close();
+		}
+
+		const result = await checkComplete({ json: false });
+		expect(result.triggers.allAgentsDone.enabled).toBe(true);
+		expect(result.triggers.allAgentsDone.met).toBe(false);
+		expect(result.triggers.onShutdownSignal.enabled).toBe(true);
+		expect(result.triggers.onShutdownSignal.met).toBe(true);
+		// Both must be met → false
+		expect(result.complete).toBe(false);
+	});
+
+	test("allAgentsDone false when merge queue has pending branches", async () => {
+		await Bun.write(
+			join(overstoryDir, "config.yaml"),
+			[
+				"project:",
+				"  name: test-project",
+				`  root: ${tempDir}`,
+				"  canonicalBranch: main",
+				"coordinator:",
+				"  exitTriggers:",
+				"    allAgentsDone: true",
+				"    taskTrackerEmpty: false",
+				"    onShutdownSignal: false",
+			].join("\n"),
+		);
+
+		const runId = `run-${Date.now()}`;
+		await Bun.write(join(overstoryDir, "current-run.txt"), runId);
+
+		// All agent sessions completed
+		const store = createSessionStore(join(overstoryDir, "sessions.db"));
+		try {
+			store.upsert({
+				id: "s1",
+				agentName: "lead-1",
+				capability: "lead",
+				worktreePath: tempDir,
+				branchName: "overstory/lead-1/task-1",
+				taskId: "task-1",
+				tmuxSession: "tmux-1",
+				state: "completed",
+				pid: null,
+				parentAgent: "coordinator",
+				depth: 1,
+				runId,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+				transcriptPath: null,
+			});
+		} finally {
+			store.close();
+		}
+
+		// Merge queue has a pending entry — lead branch not yet merged
+		const { createMergeQueue } = await import("../merge/queue.ts");
+		const queue = createMergeQueue(join(overstoryDir, "merge-queue.db"));
+		try {
+			queue.enqueue({
+				branchName: "overstory/lead-1/task-1",
+				taskId: "task-1",
+				agentName: "lead-1",
+				filesModified: ["src/foo.ts"],
+			});
+		} finally {
+			queue.close();
+		}
+
+		const result = await checkComplete({ json: false });
+		expect(result.triggers.allAgentsDone.enabled).toBe(true);
+		expect(result.triggers.allAgentsDone.met).toBe(false);
+		expect(result.triggers.allAgentsDone.detail).toInclude("pending merge");
+		expect(result.triggers.allAgentsDone.detail).toInclude("overstory/lead-1/task-1");
+		expect(result.complete).toBe(false);
+	});
+
+	test("allAgentsDone true when all agents completed and merge queue is empty", async () => {
+		await Bun.write(
+			join(overstoryDir, "config.yaml"),
+			[
+				"project:",
+				"  name: test-project",
+				`  root: ${tempDir}`,
+				"  canonicalBranch: main",
+				"coordinator:",
+				"  exitTriggers:",
+				"    allAgentsDone: true",
+				"    taskTrackerEmpty: false",
+				"    onShutdownSignal: false",
+			].join("\n"),
+		);
+
+		const runId = `run-${Date.now()}`;
+		await Bun.write(join(overstoryDir, "current-run.txt"), runId);
+
+		const store = createSessionStore(join(overstoryDir, "sessions.db"));
+		try {
+			store.upsert({
+				id: "s1",
+				agentName: "lead-1",
+				capability: "lead",
+				worktreePath: tempDir,
+				branchName: "overstory/lead-1/task-1",
+				taskId: "task-1",
+				tmuxSession: "tmux-1",
+				state: "completed",
+				pid: null,
+				parentAgent: "coordinator",
+				depth: 1,
+				runId,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+				transcriptPath: null,
+			});
+		} finally {
+			store.close();
+		}
+
+		// Merge queue exists but all entries are already merged (no pending)
+		const { createMergeQueue } = await import("../merge/queue.ts");
+		const queue = createMergeQueue(join(overstoryDir, "merge-queue.db"));
+		try {
+			const entry = queue.enqueue({
+				branchName: "overstory/lead-1/task-1",
+				taskId: "task-1",
+				agentName: "lead-1",
+				filesModified: ["src/foo.ts"],
+			});
+			queue.updateStatus(entry.branchName, "merged", "clean-merge");
+		} finally {
+			queue.close();
+		}
+
+		const result = await checkComplete({ json: false });
+		expect(result.triggers.allAgentsDone.enabled).toBe(true);
+		expect(result.triggers.allAgentsDone.met).toBe(true);
+		expect(result.complete).toBe(true);
+	});
+
+	test("command registration — createCoordinatorCommand has check-complete subcommand", () => {
+		const cmd = createCoordinatorCommand({});
+		const subcommandNames = cmd.commands.map((c) => c.name());
+		expect(subcommandNames).toContain("check-complete");
 	});
 });

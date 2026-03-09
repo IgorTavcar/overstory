@@ -11,11 +11,13 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { ValidationError } from "../errors.ts";
+import { jsonOutput } from "../json.ts";
 import { printSuccess } from "../logging/color.ts";
 
 export interface SpecWriteOptions {
 	body?: string;
 	agent?: string;
+	json?: boolean;
 }
 
 /**
@@ -94,6 +96,10 @@ export async function specWriteCommand(taskId: string, opts: SpecWriteOptions): 
 	const { resolveProjectRoot } = await import("../config.ts");
 	const projectRoot = await resolveProjectRoot(process.cwd());
 
-	await writeSpec(projectRoot, taskId, body, opts.agent);
-	printSuccess("Spec written", taskId);
+	const specPath = await writeSpec(projectRoot, taskId, body, opts.agent);
+	if (opts.json) {
+		jsonOutput("spec-write", { taskId, path: specPath });
+	} else {
+		printSuccess("Spec written", taskId);
+	}
 }

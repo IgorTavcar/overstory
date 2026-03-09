@@ -23,12 +23,18 @@
 import { join } from "node:path";
 import { nudgeAgent } from "../commands/nudge.ts";
 import { createEventStore } from "../events/store.ts";
+import {
+	findLatestStdoutLog,
+	startEventTailer,
+	type TailerHandle,
+	type TailerOptions,
+} from "../events/tailer.ts";
 import { createMulchClient } from "../mulch/client.ts";
 import { getConnection, removeConnection } from "../runtimes/connections.ts";
 import type { RuntimeConnection } from "../runtimes/types.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import type { AgentSession, EventStore, HealthCheck } from "../types.ts";
-import { isSessionAlive, killSession } from "../worktree/tmux.ts";
+import { isProcessAlive, isSessionAlive, killProcessTree, killSession } from "../worktree/tmux.ts";
 import { evaluateHealth, transitionState } from "./health.ts";
 import { triageAgent } from "./triage.ts";
 
@@ -40,6 +46,13 @@ const MAX_ESCALATION_LEVEL = 3;
  * These agents are long-running and should not count toward "all workers done".
  */
 const PERSISTENT_CAPABILITIES = new Set(["coordinator", "monitor"]);
+
+/**
+ * Module-level registry of active event tailers for headless agents.
+ * Maps agentName → TailerHandle. Persists across daemon ticks so tailers
+ * survive between tick invocations. Overridable via DaemonOptions._tailerRegistry.
+ */
+const _defaultTailerRegistry: Map<string, TailerHandle> = new Map();
 
 /**
  * Record an agent failure to mulch for future reference.
@@ -274,6 +287,11 @@ export interface DaemonOptions {
 		message: string,
 		force: boolean,
 	) => Promise<{ delivered: boolean; reason?: string }>;
+	/** Dependency injection for testing. Uses real isProcessAlive/killProcessTree when omitted. */
+	_process?: {
+		isAlive: (pid: number) => boolean;
+		killTree: (pid: number) => Promise<void>;
+	};
 	/** Dependency injection for testing. Overrides EventStore creation. */
 	_eventStore?: EventStore | null;
 	/** Dependency injection for testing. Uses real recordFailure when omitted. */
@@ -288,6 +306,12 @@ export interface DaemonOptions {
 	_getConnection?: (name: string) => RuntimeConnection | undefined;
 	/** Dependency injection for testing. Uses real removeConnection when omitted. */
 	_removeConnection?: (name: string) => void;
+	/** Dependency injection for testing. Uses _defaultTailerRegistry when omitted. */
+	_tailerRegistry?: Map<string, TailerHandle>;
+	/** Dependency injection for testing. Uses startEventTailer when omitted. */
+	_tailerFactory?: (opts: TailerOptions) => TailerHandle;
+	/** Dependency injection for testing. Uses findLatestStdoutLog when omitted. */
+	_findLatestStdoutLog?: (overstoryDir: string, agentName: string) => Promise<string | null>;
 }
 
 /**
@@ -333,6 +357,38 @@ export function startDaemon(options: DaemonOptions & { intervalMs: number }): { 
 }
 
 /**
+ * Kill an agent using the appropriate method based on whether it is headless or TUI.
+ *
+ * Headless agents (tmuxSession === "" && pid !== null) are killed via PID process tree.
+ * TUI agents are killed via their named tmux session (only if tmuxAlive).
+ *
+ * This prevents the blast-radius bug where killSession("") with tmux prefix matching
+ * would kill ALL tmux sessions when a headless agent is terminated.
+ */
+async function killAgent(ctx: {
+	session: AgentSession;
+	tmuxAlive: boolean;
+	tmux: { killSession: (name: string) => Promise<void> };
+	process: { killTree: (pid: number) => Promise<void> };
+}): Promise<void> {
+	const { session, tmuxAlive, tmux, process: proc } = ctx;
+	const isHeadless = session.tmuxSession === "" && session.pid !== null;
+	if (isHeadless && session.pid !== null) {
+		try {
+			await proc.killTree(session.pid);
+		} catch {
+			// Already exited — not an error
+		}
+	} else if (tmuxAlive) {
+		try {
+			await tmux.killSession(session.tmuxSession);
+		} catch {
+			// Session may have died between check and kill — not an error
+		}
+	}
+}
+
+/**
  * Run a single daemon tick. Exported for testing — allows direct invocation
  * of the monitoring logic without starting the interval-based daemon loop.
  *
@@ -348,11 +404,15 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 		onHealthCheck,
 	} = options;
 	const tmux = options._tmux ?? { isSessionAlive, killSession };
+	const proc = options._process ?? { isAlive: isProcessAlive, killTree: killProcessTree };
 	const triage = options._triage ?? triageAgent;
 	const nudge = options._nudge ?? nudgeAgent;
 	const recordFailureFn = options._recordFailure ?? recordFailure;
 	const getConn = options._getConnection ?? getConnection;
 	const removeConn = options._removeConnection ?? removeConnection;
+	const tailerRegistry = options._tailerRegistry ?? _defaultTailerRegistry;
+	const tailerFactory = options._tailerFactory ?? startEventTailer;
+	const findStdoutLog = options._findLatestStdoutLog ?? findLatestStdoutLog;
 
 	const overstoryDir = join(root, ".overstory");
 	const { store } = openSessionStore(overstoryDir);
@@ -385,6 +445,10 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 
 		const sessions = store.getAll();
 
+		// Track active headless agents to clean up stale tailers after the loop.
+		const activeHeadlessAgents = new Set<string>();
+		const eventsDbPath = join(overstoryDir, "events.db");
+
 		for (const session of sessions) {
 			// Skip completed sessions — they are terminal and don't need monitoring
 			if (session.state === "completed") {
@@ -394,10 +458,35 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 			// ZFC: Don't skip zombies. Re-check tmux liveness on every tick.
 			// A zombie with a live tmux session needs investigation, not silence.
 
+			// Event tailer management: start a background NDJSON tailer for each
+			// active headless agent that doesn't already have one running.
+			// Tailers persist between ticks (module-level registry) so events are
+			// continuously written to events.db while the agent is working.
+			if (session.tmuxSession === "" && session.pid !== null) {
+				activeHeadlessAgents.add(session.agentName);
+				if (!tailerRegistry.has(session.agentName)) {
+					// Discover the latest stdout.log for this agent and start tailing.
+					const logPath = await findStdoutLog(overstoryDir, session.agentName);
+					if (logPath) {
+						const handle = tailerFactory({
+							stdoutLogPath: logPath,
+							agentName: session.agentName,
+							runId,
+							eventsDbPath,
+						});
+						tailerRegistry.set(session.agentName, handle);
+					}
+				}
+			}
+
 			// RPC health check: for headless agents with an active connection,
 			// call getState() to refresh lastActivity before evaluateHealth().
 			// This prevents false-positive stale/zombie classification for agents
 			// that are actively working but haven't updated lastActivity via hooks.
+			//
+			// For non-RPC headless agents, fall back to event-based activity detection:
+			// if events.db has a recent event from this agent within the stale window,
+			// the agent is considered active and lastActivity is refreshed.
 			if (session.tmuxSession === "" && session.pid !== null) {
 				const conn = getConn(session.agentName);
 				if (conn) {
@@ -416,6 +505,20 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 					} catch {
 						// getState() failed or timed out — remove stale connection
 						removeConn(session.agentName);
+					}
+				} else if (eventStore) {
+					// No RPC connection — check events.db for recent activity
+					try {
+						const recentEvents = eventStore.getByAgent(session.agentName, {
+							since: new Date(Date.now() - staleThresholdMs).toISOString(),
+							limit: 1,
+						});
+						if (recentEvents.length > 0) {
+							store.updateLastActivity(session.agentName);
+							session.lastActivity = new Date().toISOString();
+						}
+					} catch {
+						// Non-fatal: event store query failure should not affect monitoring
 					}
 				}
 			}
@@ -439,14 +542,8 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 				const reason = check.reconciliationNote ?? "Process terminated";
 				await recordFailureFn(root, session, reason, 0);
 
-				// Kill the tmux session if it's still alive
-				if (tmuxAlive) {
-					try {
-						await tmux.killSession(session.tmuxSession);
-					} catch {
-						// Session may have died between check and kill — not an error
-					}
-				}
+				// Kill the agent: headless agents are killed via PID, TUI agents via tmux
+				await killAgent({ session, tmuxAlive, tmux, process: proc });
 				store.updateState(session.agentName, "zombie");
 				// Reset escalation tracking on terminal state
 				store.updateEscalation(session.agentName, 0, null);
@@ -488,6 +585,7 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 					tmuxAlive,
 					tier1Enabled,
 					tmux,
+					process: proc,
 					triage,
 					nudge,
 					eventStore,
@@ -507,6 +605,16 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 				store.updateEscalation(session.agentName, 0, null);
 				session.stalledSince = null;
 				session.escalationLevel = 0;
+			}
+		}
+
+		// === Tailer cleanup ===
+		// Stop tailers for any headless agent that is no longer in the active set
+		// (i.e. completed, removed from store, or was never a headless agent).
+		for (const [name, handle] of tailerRegistry) {
+			if (!activeHeadlessAgents.has(name)) {
+				handle.stop();
+				tailerRegistry.delete(name);
 			}
 		}
 
@@ -554,6 +662,9 @@ async function executeEscalationAction(ctx: {
 		isSessionAlive: (name: string) => Promise<boolean>;
 		killSession: (name: string) => Promise<void>;
 	};
+	process: {
+		killTree: (pid: number) => Promise<void>;
+	};
 	triage: (options: {
 		agentName: string;
 		root: string;
@@ -581,6 +692,7 @@ async function executeEscalationAction(ctx: {
 		tmuxAlive,
 		tier1Enabled,
 		tmux,
+		process: proc,
 		triage,
 		nudge,
 		eventStore,
@@ -650,13 +762,7 @@ async function executeEscalationAction(ctx: {
 				// Record the failure via mulch (Tier 1 AI triage)
 				await recordFailure(root, session, "AI triage classified as terminal failure", 1, verdict);
 
-				if (tmuxAlive) {
-					try {
-						await tmux.killSession(session.tmuxSession);
-					} catch {
-						// Session may have died — not an error
-					}
-				}
+				await killAgent({ session, tmuxAlive, tmux, process: proc });
 				return { terminated: true, stateChanged: true };
 			}
 
@@ -692,13 +798,7 @@ async function executeEscalationAction(ctx: {
 			// Record the failure via mulch (Tier 0: progressive escalation to terminal level)
 			await recordFailure(root, session, "Progressive escalation reached terminal level", 0);
 
-			if (tmuxAlive) {
-				try {
-					await tmux.killSession(session.tmuxSession);
-				} catch {
-					// Session may have died — not an error
-				}
-			}
+			await killAgent({ session, tmuxAlive, tmux, process: proc });
 			return { terminated: true, stateChanged: true };
 		}
 	}

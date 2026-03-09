@@ -4,6 +4,7 @@ import { ClaudeRuntime } from "./claude.ts";
 import { CodexRuntime } from "./codex.ts";
 import { CopilotRuntime } from "./copilot.ts";
 import { GeminiRuntime } from "./gemini.ts";
+import { OpenCodeRuntime } from "./opencode.ts";
 import { PiRuntime } from "./pi.ts";
 import { getRuntime } from "./registry.ts";
 
@@ -22,7 +23,7 @@ describe("getRuntime", () => {
 
 	it("throws with a helpful message for an unknown runtime", () => {
 		expect(() => getRuntime("unknown-runtime")).toThrow(
-			'Unknown runtime: "unknown-runtime". Available: claude, codex, pi, copilot, gemini, opencode, sapling',
+			'Unknown runtime: "unknown-runtime". Available: claude, codex, pi, copilot, gemini, sapling, opencode',
 		);
 	});
 
@@ -116,6 +117,25 @@ describe("getRuntime", () => {
 		const runtime = getRuntime(undefined, config);
 		expect(runtime).toBeInstanceOf(GeminiRuntime);
 		expect(runtime.id).toBe("gemini");
+	});
+
+	it("returns OpenCodeRuntime when name is 'opencode'", () => {
+		const runtime = getRuntime("opencode");
+		expect(runtime).toBeInstanceOf(OpenCodeRuntime);
+		expect(runtime.id).toBe("opencode");
+	});
+
+	it("uses config.runtime.default 'opencode' when name is omitted", () => {
+		const config = { runtime: { default: "opencode" } } as OverstoryConfig;
+		const runtime = getRuntime(undefined, config);
+		expect(runtime).toBeInstanceOf(OpenCodeRuntime);
+		expect(runtime.id).toBe("opencode");
+	});
+
+	it("opencode runtime returns a new instance on each call", () => {
+		const a = getRuntime("opencode");
+		const b = getRuntime("opencode");
+		expect(a).not.toBe(b);
 	});
 
 	describe("capability routing", () => {

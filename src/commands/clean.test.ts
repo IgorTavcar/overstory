@@ -77,6 +77,12 @@ describe("validation", () => {
 	test("no flags throws ValidationError", async () => {
 		await expect(cleanCommand({})).rejects.toThrow("No cleanup targets specified");
 	});
+
+	test("--agent and --all throws ValidationError", async () => {
+		await expect(cleanCommand({ agent: "my-builder", all: true })).rejects.toThrow(
+			"--agent and --all are mutually exclusive",
+		);
+	});
 });
 
 // === --all ===
@@ -654,5 +660,135 @@ describe("mulch health checks", () => {
 		// Should show warning about domain near limit (if mulch status worked)
 		// The exact output depends on whether mulch CLI is available in the test environment
 		expect(stdoutOutput).toBeDefined();
+	});
+});
+
+// === --agent ===
+
+describe("--agent", () => {
+	function makeSession(overrides: Partial<AgentSession> = {}): AgentSession {
+		return {
+			id: "s1",
+			agentName: "test-builder",
+			capability: "builder",
+			worktreePath: join(tempDir, ".overstory", "worktrees", "test-builder"),
+			branchName: "overstory/test-builder/task-1",
+			taskId: "task-1",
+			tmuxSession: "overstory-test-project-test-builder",
+			state: "working",
+			pid: 99999,
+			parentAgent: null,
+			depth: 1,
+			runId: "run-123",
+			startedAt: new Date().toISOString(),
+			lastActivity: new Date().toISOString(),
+			escalationLevel: 0,
+			stalledSince: null,
+			transcriptPath: null,
+			...overrides,
+		};
+	}
+
+	function saveSession(session: AgentSession): void {
+		const { store } = openSessionStore(overstoryDir);
+		try {
+			store.upsert(session);
+		} finally {
+			store.close();
+		}
+	}
+
+	test("throws AgentError when agent not found", async () => {
+		await expect(cleanCommand({ agent: "nonexistent" })).rejects.toThrow("not found");
+	});
+
+	test("clears agent and logs directories", async () => {
+		const session = makeSession();
+		saveSession(session);
+
+		// Create agent and logs dirs with content
+		const agentDir = join(overstoryDir, "agents", "test-builder");
+		const logsDir = join(overstoryDir, "logs", "test-builder");
+		await mkdir(agentDir, { recursive: true });
+		await mkdir(logsDir, { recursive: true });
+		await writeFile(join(agentDir, "identity.yaml"), "name: test-builder");
+		await writeFile(join(logsDir, "session.log"), "log data");
+
+		await cleanCommand({ agent: "test-builder" });
+
+		// Dirs should be cleared (but still exist)
+		const agentEntries = await readdir(agentDir);
+		const logEntries = await readdir(logsDir);
+		expect(agentEntries).toHaveLength(0);
+		expect(logEntries).toHaveLength(0);
+
+		expect(stdoutOutput).toContain("Agent cleaned");
+		expect(stdoutOutput).toContain("test-builder");
+	});
+
+	test("marks agent session as completed", async () => {
+		const session = makeSession({ state: "working" });
+		saveSession(session);
+
+		await cleanCommand({ agent: "test-builder" });
+
+		const { store } = openSessionStore(overstoryDir);
+		const updated = store.getByName("test-builder");
+		store.close();
+		expect(updated?.state).toBe("completed");
+	});
+
+	test("logs synthetic session-end event for non-completed agent", async () => {
+		const session = makeSession({ state: "working" });
+		saveSession(session);
+
+		await cleanCommand({ agent: "test-builder" });
+
+		const eventsDbPath = join(overstoryDir, "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+		const events = eventStore.getByAgent("test-builder");
+		eventStore.close();
+
+		const sessionEndEvents = events.filter((e) => e.eventType === "session_end");
+		expect(sessionEndEvents).toHaveLength(1);
+		const data = JSON.parse(sessionEndEvents[0]?.data ?? "{}");
+		expect(data.reason).toContain("clean --agent");
+	});
+
+	test("does not log session-end event for already-completed agent", async () => {
+		const session = makeSession({ state: "completed" });
+		saveSession(session);
+
+		await cleanCommand({ agent: "test-builder" });
+
+		const eventsDbPath = join(overstoryDir, "events.db");
+		if (existsSync(eventsDbPath)) {
+			const eventStore = createEventStore(eventsDbPath);
+			const events = eventStore.getByAgent("test-builder");
+			eventStore.close();
+			const sessionEndEvents = events.filter((e) => e.eventType === "session_end");
+			expect(sessionEndEvents).toHaveLength(0);
+		}
+	});
+
+	test("--agent + --json returns JSON with agent result", async () => {
+		const session = makeSession({ state: "working" });
+		saveSession(session);
+
+		await cleanCommand({ agent: "test-builder", json: true });
+
+		const result = JSON.parse(stdoutOutput);
+		expect(result).toHaveProperty("agent");
+		expect(result.agent).toHaveProperty("agentName", "test-builder");
+		expect(result.agent).toHaveProperty("markedCompleted");
+	});
+
+	test("handles missing agent/logs directories gracefully", async () => {
+		const session = makeSession({ state: "completed" });
+		saveSession(session);
+
+		// No agent or logs dirs — should not error
+		await cleanCommand({ agent: "test-builder" });
+		expect(stdoutOutput).toContain("Agent cleaned");
 	});
 });

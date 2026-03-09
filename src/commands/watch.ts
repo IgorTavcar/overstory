@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import { loadConfig } from "../config.ts";
 import { OverstoryError } from "../errors.ts";
+import { jsonOutput } from "../json.ts";
 import { printError, printHint, printSuccess } from "../logging/color.ts";
 import type { HealthCheck } from "../types.ts";
 import { startDaemon } from "../watchdog/daemon.ts";
@@ -115,7 +116,11 @@ async function resolveOverstoryBin(): Promise<string> {
 /**
  * Core implementation for the watch command.
  */
-async function runWatch(opts: { interval?: string; background?: boolean }): Promise<void> {
+async function runWatch(opts: {
+	interval?: string;
+	background?: boolean;
+	json?: boolean;
+}): Promise<void> {
 	const cwd = process.cwd();
 	const config = await loadConfig(cwd);
 
@@ -127,13 +132,19 @@ async function runWatch(opts: { interval?: string; background?: boolean }): Prom
 	const zombieThresholdMs = config.watchdog.zombieThresholdMs;
 	const pidFilePath = join(config.project.root, ".overstory", "watchdog.pid");
 
+	const useJson = opts.json ?? false;
+
 	if (opts.background) {
 		// Check if a watchdog is already running
 		const existingPid = await readPidFile(pidFilePath);
 		if (existingPid !== null && isProcessRunning(existingPid)) {
-			printError(
-				`Watchdog already running (PID: ${existingPid}). Kill it first or remove ${pidFilePath}`,
-			);
+			if (useJson) {
+				jsonOutput("watch", { running: true, pid: existingPid, error: "Watchdog already running" });
+			} else {
+				printError(
+					`Watchdog already running (PID: ${existingPid}). Kill it first or remove ${pidFilePath}`,
+				);
+			}
 			process.exitCode = 1;
 			return;
 		}
@@ -168,14 +179,22 @@ async function runWatch(opts: { interval?: string; background?: boolean }): Prom
 		// Write PID file for later cleanup
 		await writePidFile(pidFilePath, childPid);
 
-		printSuccess("Watchdog started in background", `PID: ${childPid}, interval: ${intervalMs}ms`);
-		printHint(`PID file: ${pidFilePath}`);
+		if (useJson) {
+			jsonOutput("watch", { pid: childPid, intervalMs, pidFile: pidFilePath });
+		} else {
+			printSuccess("Watchdog started in background", `PID: ${childPid}, interval: ${intervalMs}ms`);
+			printHint(`PID file: ${pidFilePath}`);
+		}
 		return;
 	}
 
 	// Foreground mode: show real-time health checks
-	printSuccess("Watchdog running", `interval: ${intervalMs}ms`);
-	printHint("Press Ctrl+C to stop.");
+	if (useJson) {
+		jsonOutput("watch", { pid: process.pid, intervalMs, mode: "foreground" });
+	} else {
+		printSuccess("Watchdog running", `interval: ${intervalMs}ms`);
+		printHint("Press Ctrl+C to stop.");
+	}
 
 	// Write PID file so `--background` check and external tools can find us
 	await writePidFile(pidFilePath, process.pid);
@@ -212,7 +231,8 @@ export function createWatchCommand(): Command {
 		.description("Start Tier 0 mechanical watchdog daemon")
 		.option("--interval <ms>", "Health check interval in milliseconds")
 		.option("--background", "Daemonize (run in background)")
-		.action(async (opts: { interval?: string; background?: boolean }) => {
+		.option("--json", "Output as JSON")
+		.action(async (opts: { interval?: string; background?: boolean; json?: boolean }) => {
 			await runWatch(opts);
 		});
 }

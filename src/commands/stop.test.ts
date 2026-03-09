@@ -20,6 +20,26 @@ import { cleanupTempDir, createTempGitRepo } from "../test-helpers.ts";
 import type { AgentSession } from "../types.ts";
 import { type StopDeps, stopCommand } from "./stop.ts";
 
+// --- Fake Git (for branch deletion) ---
+
+interface GitCallTracker {
+	deleteBranch: Array<{ repoRoot: string; branch: string }>;
+}
+
+function makeFakeGit(shouldSucceed = true): {
+	git: NonNullable<StopDeps["_git"]>;
+	calls: GitCallTracker;
+} {
+	const calls: GitCallTracker = { deleteBranch: [] };
+	const git: NonNullable<StopDeps["_git"]> = {
+		deleteBranch: async (repoRoot: string, branch: string): Promise<boolean> => {
+			calls.deleteBranch.push({ repoRoot, branch });
+			return shouldSucceed;
+		},
+	};
+	return { git, calls };
+}
+
 // --- Fake Process (for headless agents) ---
 
 /** Track calls to fake process for assertions. */
@@ -224,18 +244,26 @@ async function captureStderr(fn: () => Promise<void>): Promise<{ stderr: string;
 	return { stderr: stderrChunks.join(""), stdout: stdoutChunks.join("") };
 }
 
-/** Build default deps with fake tmux and worktree. */
+/** Build default deps with fake tmux, worktree, and git. */
 function makeDeps(
 	sessionAliveMap: Record<string, boolean> = {},
 	worktreeConfig?: { shouldFail?: boolean },
+	gitConfig?: { shouldSucceed?: boolean },
 ): {
 	deps: StopDeps;
 	tmuxCalls: TmuxCallTracker;
 	worktreeCalls: WorktreeCallTracker;
+	gitCalls: GitCallTracker;
 } {
 	const { tmux, calls: tmuxCalls } = makeFakeTmux(sessionAliveMap);
 	const { worktree, calls: worktreeCalls } = makeFakeWorktree(worktreeConfig?.shouldFail);
-	return { deps: { _tmux: tmux, _worktree: worktree }, tmuxCalls, worktreeCalls };
+	const { git, calls: gitCalls } = makeFakeGit(gitConfig?.shouldSucceed ?? true);
+	return {
+		deps: { _tmux: tmux, _worktree: worktree, _git: git },
+		tmuxCalls,
+		worktreeCalls,
+		gitCalls,
+	};
 }
 
 // --- Tests ---
@@ -251,13 +279,14 @@ describe("stopCommand validation", () => {
 		await expect(stopCommand("nonexistent-agent", {}, deps)).rejects.toThrow(AgentError);
 	});
 
-	test("throws AgentError when agent is already completed", async () => {
+	test("throws AgentError when agent is already completed (without --clean-worktree)", async () => {
 		const session = makeAgentSession({ state: "completed" });
 		saveSessionsToDb([session]);
 
 		const { deps } = makeDeps();
 		await expect(stopCommand("my-builder", {}, deps)).rejects.toThrow(AgentError);
 		await expect(stopCommand("my-builder", {}, deps)).rejects.toThrow(/already completed/);
+		await expect(stopCommand("my-builder", {}, deps)).rejects.toThrow(/--clean-worktree/);
 	});
 
 	test("succeeds when agent is zombie (cleanup, no error)", async () => {
@@ -315,6 +344,65 @@ describe("stopCommand zombie cleanup", () => {
 		const updated = store.getByName("my-builder");
 		store.close();
 		expect(updated?.state).toBe("completed");
+	});
+});
+
+describe("stopCommand completed agent cleanup", () => {
+	test("completed + --clean-worktree removes worktree and branch", async () => {
+		const session = makeAgentSession({ state: "completed" });
+		saveSessionsToDb([session]);
+
+		const { deps, tmuxCalls, worktreeCalls, gitCalls } = makeDeps();
+		const output = await captureStdout(() =>
+			stopCommand("my-builder", { cleanWorktree: true }, deps),
+		);
+
+		expect(output).toContain("Agent stopped");
+		expect(output).toContain("already completed");
+		expect(output).toContain(`Worktree removed`);
+		expect(output).toContain(`Branch deleted`);
+
+		// No kill operations
+		expect(tmuxCalls.isSessionAlive).toHaveLength(0);
+		expect(tmuxCalls.killSession).toHaveLength(0);
+
+		// Worktree removed
+		expect(worktreeCalls.remove).toHaveLength(1);
+
+		// Branch deleted
+		expect(gitCalls.deleteBranch).toHaveLength(1);
+		expect(gitCalls.deleteBranch[0]?.branch).toBe(session.branchName);
+	});
+
+	test("completed + --clean-worktree + --json includes wasCompleted: true", async () => {
+		const session = makeAgentSession({ state: "completed" });
+		saveSessionsToDb([session]);
+
+		const { deps } = makeDeps();
+		const output = await captureStdout(() =>
+			stopCommand("my-builder", { cleanWorktree: true, json: true }, deps),
+		);
+
+		const parsed = JSON.parse(output.trim()) as Record<string, unknown>;
+		expect(parsed.success).toBe(true);
+		expect(parsed.stopped).toBe(true);
+		expect(parsed.wasCompleted).toBe(true);
+		expect(parsed.tmuxKilled).toBe(false);
+		expect(parsed.pidKilled).toBe(false);
+		expect(parsed.worktreeRemoved).toBe(true);
+		expect(parsed.branchDeleted).toBe(true);
+	});
+
+	test("branch deletion failure is non-fatal for completed agent", async () => {
+		const session = makeAgentSession({ state: "completed" });
+		saveSessionsToDb([session]);
+
+		const { deps } = makeDeps({}, {}, { shouldSucceed: false });
+		// Should not throw even if branch deletion fails
+		const output = await captureStdout(() =>
+			stopCommand("my-builder", { cleanWorktree: true }, deps),
+		);
+		expect(output).toContain("Agent stopped");
 	});
 });
 
@@ -435,7 +523,7 @@ describe("stopCommand --clean-worktree", () => {
 		expect(worktreeCalls.remove[0]?.path).toBe(session.worktreePath);
 	});
 
-	test("--clean-worktree with --force passes force flags to removeWorktree", async () => {
+	test("--clean-worktree with --force passes force to removeWorktree (forceBranch is always false)", async () => {
 		const session = makeAgentSession({ state: "working" });
 		saveSessionsToDb([session]);
 
@@ -446,7 +534,37 @@ describe("stopCommand --clean-worktree", () => {
 
 		expect(worktreeCalls.remove).toHaveLength(1);
 		expect(worktreeCalls.remove[0]?.options?.force).toBe(true);
-		expect(worktreeCalls.remove[0]?.options?.forceBranch).toBe(true);
+		// forceBranch is always false because branch deletion is handled separately via git branch -D
+		expect(worktreeCalls.remove[0]?.options?.forceBranch).toBe(false);
+	});
+
+	test("--clean-worktree also deletes the branch", async () => {
+		const session = makeAgentSession({ state: "working" });
+		saveSessionsToDb([session]);
+
+		const { deps, gitCalls } = makeDeps({ [session.tmuxSession]: true });
+		const output = await captureStdout(() =>
+			stopCommand("my-builder", { cleanWorktree: true }, deps),
+		);
+
+		expect(gitCalls.deleteBranch).toHaveLength(1);
+		expect(gitCalls.deleteBranch[0]?.branch).toBe(session.branchName);
+		expect(output).toContain("Branch deleted");
+	});
+
+	test("branch deletion failure is non-fatal (agent still stopped)", async () => {
+		const session = makeAgentSession({ state: "working" });
+		saveSessionsToDb([session]);
+
+		const { deps } = makeDeps({ [session.tmuxSession]: true }, {}, { shouldSucceed: false });
+		const output = await captureStdout(() =>
+			stopCommand("my-builder", { cleanWorktree: true }, deps),
+		);
+		expect(output).toContain("Agent stopped");
+		const { store } = openSessionStore(overstoryDir);
+		const updated = store.getByName("my-builder");
+		store.close();
+		expect(updated?.state).toBe("completed");
 	});
 
 	test("--clean-worktree failure is non-fatal (agent still stopped, warning on stdout)", async () => {
@@ -505,15 +623,18 @@ describe("stopCommand headless agents", () => {
 		tmuxCalls: TmuxCallTracker;
 		procCalls: ProcessCallTracker;
 		worktreeCalls: WorktreeCallTracker;
+		gitCalls: GitCallTracker;
 	} {
 		const { tmux, calls: tmuxCalls } = makeFakeTmux({});
 		const { proc, calls: procCalls } = makeFakeProcess(pidAliveMap);
 		const { worktree, calls: worktreeCalls } = makeFakeWorktree(worktreeConfig?.shouldFail);
+		const { git, calls: gitCalls } = makeFakeGit();
 		return {
-			deps: { _tmux: tmux, _worktree: worktree, _process: proc },
+			deps: { _tmux: tmux, _worktree: worktree, _process: proc, _git: git },
 			tmuxCalls,
 			procCalls,
 			worktreeCalls,
+			gitCalls,
 		};
 	}
 

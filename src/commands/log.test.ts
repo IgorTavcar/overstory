@@ -400,8 +400,10 @@ describe("logCommand", () => {
 	});
 
 	describe("session-end coordinator run completion", () => {
-		test("session-end auto-completes the active run for coordinator agent", async () => {
-			// Create sessions.db with coordinator and a run
+		test("session-end does NOT auto-complete the active run for coordinator agent (per-turn Stop hook guard)", async () => {
+			// Regression test for overstory-adc5:
+			// The coordinator's Stop hook fires on every turn boundary, not just at true session exit.
+			// session-end must NOT auto-complete the run, or the coordinator dies after its first turn.
 			const dbPath = join(tempDir, ".overstory", "sessions.db");
 			const sessionStoreLocal = createSessionStore(dbPath);
 			sessionStoreLocal.upsert({
@@ -439,23 +441,20 @@ describe("logCommand", () => {
 			const currentRunPath = join(tempDir, ".overstory", "current-run.txt");
 			await Bun.write(currentRunPath, "run-test-001");
 
-			// Verify current-run.txt exists before test
-			expect(await Bun.file(currentRunPath).exists()).toBe(true);
-
-			// Call session-end
+			// Call session-end (simulates per-turn Stop hook)
 			await logCommand(["session-end", "--agent", "coordinator"]);
 
-			// Verify: run status is "completed" in RunStore
+			// Verify: run status remains "active" — session-end must NOT auto-complete the run
 			const runStoreRead = createRunStore(dbPath);
 			const run = runStoreRead.getRun("run-test-001");
 			runStoreRead.close();
 
 			expect(run).toBeDefined();
-			expect(run?.status).toBe("completed");
-			expect(run?.completedAt).toBeTruthy();
+			expect(run?.status).toBe("active");
+			expect(run?.completedAt).toBeNull();
 
-			// Verify: current-run.txt is deleted (create fresh file reference)
-			expect(await Bun.file(currentRunPath).exists()).toBe(false);
+			// Verify: current-run.txt is NOT deleted (coordinator is still running)
+			expect(await Bun.file(currentRunPath).exists()).toBe(true);
 		});
 
 		test("session-end does not fail when no active run for coordinator", async () => {

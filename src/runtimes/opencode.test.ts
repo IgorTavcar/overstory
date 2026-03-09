@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTempDir } from "../test-helpers.ts";
@@ -7,389 +7,319 @@ import type { ResolvedModel } from "../types.ts";
 import { OpenCodeRuntime } from "./opencode.ts";
 import type { SpawnOpts } from "./types.ts";
 
-describe("OpenCode runtime", () => {
+describe("OpenCodeRuntime", () => {
 	const runtime = new OpenCodeRuntime();
-	let testDir: string;
-
-	beforeEach(async () => {
-		testDir = await mkdtemp(join(tmpdir(), "overstory-opencode-"));
-	});
-
-	afterEach(async () => {
-		await cleanupTempDir(testDir);
-	});
 
 	describe("id and instructionPath", () => {
 		test("id is 'opencode'", () => {
 			expect(runtime.id).toBe("opencode");
 		});
 
-		test("instructionPath is .claude/CLAUDE.md", () => {
-			expect(runtime.instructionPath).toBe(".claude/CLAUDE.md");
+		test("instructionPath is AGENTS.md", () => {
+			expect(runtime.instructionPath).toBe("AGENTS.md");
 		});
 	});
 
 	describe("buildSpawnCommand", () => {
-		test("includes model flag", () => {
+		test("includes --model flag", () => {
 			const opts: SpawnOpts = {
-				model: "openrouter/z-ai/glm-4.7",
+				model: "sonnet",
 				permissionMode: "bypass",
 				cwd: "/tmp/worktree",
 				env: {},
 			};
 			const cmd = runtime.buildSpawnCommand(opts);
-			expect(cmd).toContain("opencode run");
-			expect(cmd).toContain("--model openrouter/z-ai/glm-4.7");
+			expect(cmd).toBe("opencode --model sonnet");
 		});
 
-		test("includes dir flag for worktree", () => {
-			const opts: SpawnOpts = {
-				model: "nvidia/deepseek-ai/deepseek-v3.2",
+		test("permissionMode is ignored (opencode has no permission flag)", () => {
+			const bypass: SpawnOpts = {
+				model: "opus",
 				permissionMode: "bypass",
-				cwd: testDir,
+				cwd: "/tmp",
 				env: {},
 			};
-			const cmd = runtime.buildSpawnCommand(opts);
-			expect(cmd).toContain(`--dir '${testDir}'`);
+			const ask: SpawnOpts = { ...bypass, permissionMode: "ask" };
+			expect(runtime.buildSpawnCommand(bypass)).toBe("opencode --model opus");
+			expect(runtime.buildSpawnCommand(ask)).toBe("opencode --model opus");
 		});
 
-		test("includes system prompt from file", () => {
-			const opts: SpawnOpts = {
-				model: "nvidia/moonshotai/kimi-k2.5",
-				permissionMode: "bypass",
-				cwd: testDir,
-				env: {},
-				appendSystemPromptFile: join(testDir, "prompt.txt"),
-			};
-			const cmd = runtime.buildSpawnCommand(opts);
-			expect(cmd).toContain(`--prompt "$(cat '${join(testDir, "prompt.txt")}')"`);
-		});
-
-		test("includes inline system prompt", () => {
+		test("appendSystemPrompt is ignored (opencode has no such flag)", () => {
 			const opts: SpawnOpts = {
 				model: "sonnet",
 				permissionMode: "bypass",
-				cwd: testDir,
+				cwd: "/tmp/worktree",
 				env: {},
-				appendSystemPrompt: "You are a coding agent",
+				appendSystemPrompt: "You are a builder agent.",
 			};
 			const cmd = runtime.buildSpawnCommand(opts);
-			expect(cmd).toContain("--prompt 'You are a coding agent'");
+			expect(cmd).toBe("opencode --model sonnet");
+			expect(cmd).not.toContain("append-system-prompt");
+			expect(cmd).not.toContain("You are a builder agent");
 		});
 
-		test("properly escapes single quotes in paths", () => {
+		test("appendSystemPromptFile is ignored (opencode has no such flag)", () => {
+			const opts: SpawnOpts = {
+				model: "opus",
+				permissionMode: "bypass",
+				cwd: "/project",
+				env: {},
+				appendSystemPromptFile: "/project/.overstory/specs/task.md",
+			};
+			const cmd = runtime.buildSpawnCommand(opts);
+			expect(cmd).toBe("opencode --model opus");
+			expect(cmd).not.toContain("task.md");
+		});
+
+		test("cwd and env are not embedded in command string", () => {
 			const opts: SpawnOpts = {
 				model: "sonnet",
 				permissionMode: "bypass",
-				cwd: "/path/with'quote",
-				env: {},
+				cwd: "/some/specific/path",
+				env: { OPENAI_API_KEY: "sk-test-123" },
 			};
 			const cmd = runtime.buildSpawnCommand(opts);
-			expect(cmd).toContain("--dir '/path/with'\\''quote'");
+			expect(cmd).not.toContain("/some/specific/path");
+			expect(cmd).not.toContain("sk-test-123");
+			expect(cmd).not.toContain("OPENAI_API_KEY");
 		});
 
-		test("properly escapes single quotes in system prompt", () => {
+		test("all model names pass through unchanged", () => {
+			for (const model of ["sonnet", "opus", "haiku", "gpt-4o", "openrouter/gpt-5"]) {
+				const opts: SpawnOpts = {
+					model,
+					permissionMode: "bypass",
+					cwd: "/tmp",
+					env: {},
+				};
+				const cmd = runtime.buildSpawnCommand(opts);
+				expect(cmd).toContain(`--model ${model}`);
+			}
+		});
+
+		test("produces identical output for same inputs (deterministic)", () => {
 			const opts: SpawnOpts = {
 				model: "sonnet",
 				permissionMode: "bypass",
-				cwd: testDir,
-				env: {},
-				appendSystemPrompt: "It's a test",
-			};
-			const cmd = runtime.buildSpawnCommand(opts);
-			expect(cmd).toContain("--prompt 'It'\\''s a test'");
-		});
-
-		test("works without model uses cwd", () => {
-			const opts: SpawnOpts = {
-				model: "",
-				permissionMode: "bypass",
-				cwd: testDir,
+				cwd: "/tmp/worktree",
 				env: {},
 			};
-			const cmd = runtime.buildSpawnCommand(opts);
-			expect(cmd).toContain(`--dir '${testDir}'`);
-		});
-
-		test("works without cwd uses model", () => {
-			const opts: SpawnOpts = {
-				model: "sonnet",
-				permissionMode: "bypass",
-				cwd: "",
-				env: {},
-			};
-			const cmd = runtime.buildSpawnCommand(opts);
-			expect(cmd).toBe("opencode run --model sonnet");
+			expect(runtime.buildSpawnCommand(opts)).toBe(runtime.buildSpawnCommand(opts));
 		});
 	});
 
 	describe("buildPrintCommand", () => {
-		test("includes format json for headless mode", () => {
-			const cmd = runtime.buildPrintCommand("Complete the task");
-			expect(cmd).toEqual(["opencode", "run", "--format", "json", "Complete the task"]);
+		test("basic command without model includes --prompt and --format json", () => {
+			const argv = runtime.buildPrintCommand("Summarize this diff");
+			expect(argv).toEqual(["opencode", "--prompt", "Summarize this diff", "--format", "json"]);
 		});
 
-		test("includes model when specified", () => {
-			const cmd = runtime.buildPrintCommand("Complete the task", "sonnet");
-			expect(cmd).toEqual([
+		test("command with model override appends --model flag", () => {
+			const argv = runtime.buildPrintCommand("Classify this error", "haiku");
+			expect(argv).toEqual([
 				"opencode",
-				"run",
+				"--prompt",
+				"Classify this error",
 				"--format",
 				"json",
 				"--model",
-				"sonnet",
-				"Complete the task",
+				"haiku",
 			]);
 		});
 
-		test("excludes model when not specified", () => {
-			const cmd = runtime.buildPrintCommand("Complete the task");
-			expect(cmd).not.toContain("--model");
+		test("model undefined omits --model flag", () => {
+			const argv = runtime.buildPrintCommand("Hello", undefined);
+			expect(argv).not.toContain("--model");
+			expect(argv).toContain("--format");
+			expect(argv).toContain("json");
+		});
+
+		test("prompt is passed verbatim as a single argv element", () => {
+			const prompt = "Fix the bug in src/foo.ts line 42";
+			const argv = runtime.buildPrintCommand(prompt);
+			const promptIdx = argv.indexOf("--prompt");
+			expect(promptIdx).toBeGreaterThan(-1);
+			expect(argv[promptIdx + 1]).toBe(prompt);
 		});
 	});
 
-	describe("deployConfig", () => {
-		test("writes CLAUDE.md to worktree", async () => {
-			const _opts: SpawnOpts = {
-				model: "sonnet",
-				permissionMode: "bypass",
-				cwd: testDir,
-				env: {},
-			};
-			const overlay = {
-				content: "# Task Instructions\n\nDo something",
-			};
-
-			const hooks = {
-				agentName: "test-agent",
-				capability: "builder",
-				worktreePath: testDir,
-			};
-
-			await runtime.deployConfig(testDir, overlay, hooks);
-
-			const claudeMdPath = join(testDir, ".claude", "CLAUDE.md");
-			const file = Bun.file(claudeMdPath);
-			expect(await file.exists()).toBe(true);
-
-			const content = await file.text();
-			expect(content).toBe(overlay.content);
-		});
-
-		test("creates .claude directory if it doesn't exist", async () => {
-			const overlay = {
-				content: "# Instructions",
-			};
-			const hooks = {
-				agentName: "test-agent",
-				capability: "builder",
-				worktreePath: testDir,
-			};
-
-			await runtime.deployConfig(testDir, overlay, hooks);
-
-			const claudeDir = join(testDir, ".claude");
-			const claudeMdPath = join(claudeDir, "CLAUDE.md");
-			const file = Bun.file(claudeMdPath);
-			expect(await file.exists()).toBe(true);
-		});
-
-		test("no-op when overlay is undefined", async () => {
-			const hooks = {
-				agentName: "test-agent",
-				capability: "builder",
-				worktreePath: testDir,
-			};
-
-			await runtime.deployConfig(testDir, undefined, hooks);
-
-			const claudeMdPath = join(testDir, ".claude", "CLAUDE.md");
-			const file = Bun.file(claudeMdPath);
-			expect(await file.exists()).toBe(false);
-		});
-	});
-
-	describe("detectReady", () => {
-		test("returns ready when prompt and status bar are present", () => {
-			const paneContent = "❯ Some prompt\nStatus: 50% complete";
-			const state = runtime.detectReady(paneContent);
-			expect(state).toEqual({ phase: "ready" });
-		});
-
-		test("returns ready when opencode and status indicators are present", () => {
-			const paneContent = "opencode v1.2.15\nReady\n│─Tokens: 1000";
-			const state = runtime.detectReady(paneContent);
-			expect(state).toEqual({ phase: "ready" });
-		});
-
-		test("returns loading when only prompt is present", () => {
-			const paneContent = "❯ Some prompt";
-			const state = runtime.detectReady(paneContent);
-			expect(state).toEqual({ phase: "loading" });
-		});
-
-		test("returns loading when only status bar is present", () => {
-			const paneContent = "Status: 50%";
-			const state = runtime.detectReady(paneContent);
-			expect(state).toEqual({ phase: "loading" });
-		});
-
+	describe("detectReady (stub)", () => {
 		test("returns loading for empty pane", () => {
-			const paneContent = "";
-			const state = runtime.detectReady(paneContent);
-			expect(state).toEqual({ phase: "loading" });
+			expect(runtime.detectReady("")).toEqual({ phase: "loading" });
 		});
 
-		test("recognizes token counts in status bar", () => {
-			const paneContent = "❯ Prompt\nTokens: 1500";
-			const state = runtime.detectReady(paneContent);
-			expect(state).toEqual({ phase: "ready" });
+		test("returns loading for any content (stub always returns loading)", () => {
+			expect(runtime.detectReady("OpenCode v1.0\n> ")).toEqual({ phase: "loading" });
+			expect(runtime.detectReady("ready")).toEqual({ phase: "loading" });
+			expect(runtime.detectReady("opencode started")).toEqual({ phase: "loading" });
 		});
 
-		test("recognizes ready indicator", () => {
-			const paneContent = "❯ Prompt\nRunning";
-			const state = runtime.detectReady(paneContent);
-			expect(state).toEqual({ phase: "ready" });
+		test("never returns dialog phase", () => {
+			const state = runtime.detectReady("trust this folder?");
+			expect(state.phase).not.toBe("dialog");
 		});
 	});
 
-	describe("parseTranscript", () => {
-		test("returns null when file doesn't exist", async () => {
-			const result = await runtime.parseTranscript(join(testDir, "nonexistent.json"));
+	describe("parseTranscript (stub)", () => {
+		let tempDir: string;
+
+		beforeEach(async () => {
+			tempDir = await mkdtemp(join(tmpdir(), "overstory-opencode-transcript-test-"));
+		});
+
+		afterEach(async () => {
+			await cleanupTempDir(tempDir);
+		});
+
+		test("returns null for non-existent file", async () => {
+			const result = await runtime.parseTranscript(join(tempDir, "does-not-exist.jsonl"));
 			expect(result).toBeNull();
 		});
 
-		test("parses JSONL format with inputTokens and outputTokens", async () => {
-			const transcriptPath = join(testDir, "transcript.jsonl");
-			const content = `{"inputTokens":100,"outputTokens":200,"model":"model-1"}
-{"inputTokens":50,"outputTokens":100,"model":"model-2"}`;
-			await Bun.write(transcriptPath, content);
-
-			const result = await runtime.parseTranscript(transcriptPath);
-			expect(result).not.toBeNull();
-			expect(result?.inputTokens).toBe(150);
-			expect(result?.outputTokens).toBe(300);
-			expect(result?.model).toBe("model-2");
-		});
-
-		test("parses JSONL format with usage object", async () => {
-			const transcriptPath = join(testDir, "transcript.jsonl");
-			const content = `{"usage":{"inputTokens":100,"outputTokens":200}}
-{"usage":{"inputTokens":50,"outputTokens":100}}`;
-			await Bun.write(transcriptPath, content);
-
-			const result = await runtime.parseTranscript(transcriptPath);
-			expect(result).not.toBeNull();
-			expect(result?.inputTokens).toBe(150);
-			expect(result?.outputTokens).toBe(300);
-		});
-
-		test.skip("parses JSONL format with message.usage object", async () => {
-			// TODO: Fix this test - the runtime parseTranscript needs debugging
-			const transcriptPath = join(testDir, "transcript.jsonl");
-			const content = `{"message":{"usage":{"input_tokens":100,"output_tokens":200},"model":"model-1"}}`;
-			await Bun.write(transcriptPath, content);
-
-			const result = await runtime.parseTranscript(transcriptPath);
-			expect(result).not.toBeNull();
-			expect(result?.inputTokens).toBe(100);
-			expect(result?.outputTokens).toBe(200);
-			expect(result?.model).toBe("model-1");
-		});
-
-		test("parses single JSON object format", async () => {
-			const transcriptPath = join(testDir, "transcript.json");
-			const content = JSON.stringify({
-				tokens: {
-					input: 100,
-					output: 200,
-				},
-				model: "sonnet",
-			});
-			await Bun.write(transcriptPath, content);
-
-			const result = await runtime.parseTranscript(transcriptPath);
-			expect(result).not.toBeNull();
-			expect(result?.inputTokens).toBe(100);
-			expect(result?.outputTokens).toBe(200);
-			expect(result?.model).toBe("sonnet");
-		});
-
-		test("handles prompt_tokens and completion_tokens fields", async () => {
-			const transcriptPath = join(testDir, "transcript.json");
-			const content = JSON.stringify({
-				tokens: {
-					prompt_tokens: 100,
-					completion_tokens: 200,
-				},
-			});
-			await Bun.write(transcriptPath, content);
-
-			const result = await runtime.parseTranscript(transcriptPath);
-			expect(result).not.toBeNull();
-			expect(result?.inputTokens).toBe(100);
-			expect(result?.outputTokens).toBe(200);
-		});
-
-		test("returns null for malformed JSON", async () => {
-			const transcriptPath = join(testDir, "transcript.json");
-			await Bun.write(transcriptPath, "invalid json");
-
+		test("returns null for existing file (format not yet verified)", async () => {
+			const transcriptPath = join(tempDir, "session.jsonl");
+			await Bun.write(transcriptPath, `${JSON.stringify({ type: "result", tokens: 100 })}\n`);
 			const result = await runtime.parseTranscript(transcriptPath);
 			expect(result).toBeNull();
 		});
 
-		test("returns null when no tokens found", async () => {
-			const transcriptPath = join(testDir, "transcript.json");
-			const content = JSON.stringify({
-				someField: "value",
-			});
-			await Bun.write(transcriptPath, content);
-
+		test("returns null for empty file", async () => {
+			const transcriptPath = join(tempDir, "empty.jsonl");
+			await Bun.write(transcriptPath, "");
 			const result = await runtime.parseTranscript(transcriptPath);
 			expect(result).toBeNull();
 		});
+	});
 
-		test("handles options.model for model field", async () => {
-			const transcriptPath = join(testDir, "transcript.json");
-			const content = JSON.stringify({
-				tokens: {
-					input: 100,
-					output: 200,
-				},
-				options: {
-					model: "sonnet",
-				},
-			});
-			await Bun.write(transcriptPath, content);
+	describe("getTranscriptDir (stub)", () => {
+		test("returns null (location not yet verified)", () => {
+			expect(runtime.getTranscriptDir("/some/project")).toBeNull();
+		});
 
-			const result = await runtime.parseTranscript(transcriptPath);
-			expect(result?.model).toBe("sonnet");
+		test("returns null regardless of project root", () => {
+			expect(runtime.getTranscriptDir("/home/user/project")).toBeNull();
+			expect(runtime.getTranscriptDir("/tmp/test")).toBeNull();
 		});
 	});
 
 	describe("buildEnv", () => {
-		test("returns empty object when model.env is undefined", () => {
-			const model: ResolvedModel = {
-				model: "sonnet",
-			};
-			const env = runtime.buildEnv(model);
-			expect(env).toEqual({});
+		test("returns empty object when model has no env", () => {
+			const model: ResolvedModel = { model: "sonnet" };
+			expect(runtime.buildEnv(model)).toEqual({});
 		});
 
-		test("returns model.env when set", () => {
+		test("returns model.env when present", () => {
 			const model: ResolvedModel = {
-				model: "sonnet",
-				env: {
-					OPENROUTER_API_KEY: "test-key",
-					NVIDIA_API_KEY: "test-nvidia-key",
-				},
+				model: "gpt-4o",
+				env: { OPENAI_API_KEY: "sk-test-123", OPENCODE_API_URL: "https://api.openai.com" },
 			};
-			const env = runtime.buildEnv(model);
-			expect(env).toEqual({
-				OPENROUTER_API_KEY: "test-key",
-				NVIDIA_API_KEY: "test-nvidia-key",
+			expect(runtime.buildEnv(model)).toEqual({
+				OPENAI_API_KEY: "sk-test-123",
+				OPENCODE_API_URL: "https://api.openai.com",
 			});
 		});
+
+		test("returns empty object when model.env is undefined", () => {
+			const model: ResolvedModel = { model: "opus", env: undefined };
+			expect(runtime.buildEnv(model)).toEqual({});
+		});
+
+		test("env is safe to spread into session env", () => {
+			const model: ResolvedModel = { model: "sonnet" };
+			const env = runtime.buildEnv(model);
+			const combined = { ...env, OVERSTORY_AGENT_NAME: "builder-1" };
+			expect(combined).toEqual({ OVERSTORY_AGENT_NAME: "builder-1" });
+		});
+	});
+
+	describe("deployConfig", () => {
+		let tempDir: string;
+
+		beforeEach(async () => {
+			tempDir = await mkdtemp(join(tmpdir(), "overstory-opencode-test-"));
+		});
+
+		afterEach(async () => {
+			await cleanupTempDir(tempDir);
+		});
+
+		test("writes overlay to AGENTS.md when provided", async () => {
+			const worktreePath = join(tempDir, "worktree");
+
+			await runtime.deployConfig(
+				worktreePath,
+				{ content: "# Agent Instructions\nYou are a builder." },
+				{ agentName: "test-builder", capability: "builder", worktreePath },
+			);
+
+			const content = await Bun.file(join(worktreePath, "AGENTS.md")).text();
+			expect(content).toBe("# Agent Instructions\nYou are a builder.");
+		});
+
+		test("creates worktree directory if it does not exist", async () => {
+			const worktreePath = join(tempDir, "new-worktree");
+
+			await runtime.deployConfig(
+				worktreePath,
+				{ content: "# Instructions" },
+				{ agentName: "test", capability: "builder", worktreePath },
+			);
+
+			const exists = await Bun.file(join(worktreePath, "AGENTS.md")).exists();
+			expect(exists).toBe(true);
+		});
+
+		test("skips overlay write when overlay is undefined", async () => {
+			const worktreePath = join(tempDir, "worktree");
+
+			await runtime.deployConfig(worktreePath, undefined, {
+				agentName: "coordinator",
+				capability: "coordinator",
+				worktreePath,
+			});
+
+			const exists = await Bun.file(join(worktreePath, "AGENTS.md")).exists();
+			expect(exists).toBe(false);
+		});
+
+		test("does not write settings.local.json (no hook deployment)", async () => {
+			const worktreePath = join(tempDir, "worktree");
+
+			await runtime.deployConfig(
+				worktreePath,
+				{ content: "# Instructions" },
+				{ agentName: "test-builder", capability: "builder", worktreePath },
+			);
+
+			const settingsExists = await Bun.file(
+				join(worktreePath, ".claude", "settings.local.json"),
+			).exists();
+			expect(settingsExists).toBe(false);
+		});
+
+		test("overwrites existing AGENTS.md", async () => {
+			const worktreePath = join(tempDir, "worktree");
+			await mkdir(worktreePath, { recursive: true });
+			await Bun.write(join(worktreePath, "AGENTS.md"), "old content");
+
+			await runtime.deployConfig(
+				worktreePath,
+				{ content: "new content" },
+				{ agentName: "test", capability: "builder", worktreePath },
+			);
+
+			const content = await Bun.file(join(worktreePath, "AGENTS.md")).text();
+			expect(content).toBe("new content");
+		});
+	});
+});
+
+describe("OpenCodeRuntime integration: registry resolves 'opencode'", () => {
+	test("getRuntime('opencode') returns OpenCodeRuntime", async () => {
+		const { getRuntime } = await import("./registry.ts");
+		const rt = getRuntime("opencode");
+		expect(rt).toBeInstanceOf(OpenCodeRuntime);
+		expect(rt.id).toBe("opencode");
+		expect(rt.instructionPath).toBe("AGENTS.md");
 	});
 });

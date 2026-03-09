@@ -51,7 +51,7 @@ Purpose-built messaging via `bun:sqlite` in `.overstory/mail.db`. WAL mode for c
 ```
 overstory/                        # This repo (the overstory tool itself)
   src/
-    index.ts                      # CLI entry point (Commander.js program, 34 commands)
+    index.ts                      # CLI entry point (Commander.js program, 35 commands)
     types.ts                      # ALL shared types and interfaces
     config.ts                     # Config loader + defaults + validation
     errors.ts                     # Custom error types (extend OverstoryError)
@@ -64,7 +64,7 @@ overstory/                        # This repo (the overstory tool itself)
       status.ts                   # ov status
       dashboard.ts                # ov dashboard (live TUI)
       inspect.ts                  # ov inspect (deep agent view)
-      coordinator.ts              # ov coordinator start/stop/status/send/ask/output
+      coordinator.ts              # ov coordinator start/stop/status/send/ask/output/check-complete
       supervisor.ts               # ov supervisor start/stop/status [DEPRECATED]
       hooks.ts                    # ov hooks install/uninstall/status
       mail.ts                     # ov mail send/check/list/read/reply/purge
@@ -109,6 +109,7 @@ overstory/                        # This repo (the overstory tool itself)
     events/
       store.ts                    # SQLite EventStore (tool events, timelines, errors)
       tool-filter.ts              # Smart arg filtering for event storage
+      tailer.ts                   # NDJSON event tailer for headless agent stdout logs
     insights/
       analyzer.ts                 # Session insight analyzer for auto-expertise
     tracker/
@@ -130,6 +131,7 @@ overstory/                        # This repo (the overstory tool itself)
       codex.ts                    # OpenAI Codex runtime adapter (headless, OS-level sandbox)
       gemini.ts                   # Gemini CLI runtime adapter (Google's gemini coding agent)
       sapling.ts                  # Sapling runtime adapter (headless coding agent)
+      opencode.ts                 # OpenCode runtime adapter (SST OpenCode coding agent)
       connections.ts              # Module-level RuntimeConnection registry for RPC agents
     mulch/
       client.ts                   # mulch client (programmatic API for record/search/query, CLI wrapper for rest)
@@ -333,6 +335,7 @@ ov coordinator <sub>            Persistent coordinator agent
     --timeout <seconds>                  Reply timeout (default: 120)
   output                                 Show recent coordinator output (tmux pane content)
     --lines <n>                          Number of lines to capture (default: 100)
+  check-complete                         Evaluate exit triggers, return completion status
   --json                                 JSON output
 
 ov supervisor <sub>             [DEPRECATED] Per-project supervisor agent
@@ -517,6 +520,7 @@ ov upgrade                       Upgrade overstory to latest npm version
   --json                                 JSON output
 
 ov clean                         Wipe runtime state (nuclear cleanup)
+  --agent <name>                         Targeted cleanup of a single agent
   --all                                  Wipe everything
   --mail  --sessions  --metrics          Individual DB cleanup
   --logs  --worktrees  --branches        Individual resource cleanup
@@ -653,6 +657,33 @@ Run `mulch --help` for full usage.
    mulch validate && git add .mulch/ && git commit -m "mulch: record learnings"
    ```
 <!-- mulch:end -->
+
+<!-- seeds:start -->
+## Issue Tracking (Seeds)
+<!-- seeds-onboard-v:1 -->
+
+This project uses [Seeds](https://github.com/jayminwest/seeds) for git-native issue tracking.
+
+**At the start of every session**, run:
+```
+sd prime
+```
+
+This injects session context: rules, command reference, and workflows.
+
+**Quick reference:**
+- `sd ready` — Find unblocked work
+- `sd create --title "..." --type task --priority 2` — Create issue
+- `sd update <id> --status in_progress` — Claim work
+- `sd close <id>` — Complete work
+- `sd dep add <id> <depends-on>` — Add dependency between issues
+- `sd sync` — Sync with git (run before pushing)
+
+### Before You Finish
+1. Close completed issues: `sd close <id>`
+2. File issues for remaining work: `sd create --title "..."`
+3. Sync and push: `sd sync && git push`
+<!-- seeds:end -->
 
 <!-- canopy:start -->
 ## Prompt Management (Canopy)

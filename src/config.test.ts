@@ -1088,6 +1088,71 @@ describe("projectRootOverride", () => {
 	});
 });
 
+describe("coordinator.exitTriggers", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "overstory-test-"));
+		const { mkdir } = await import("node:fs/promises");
+		await mkdir(join(tempDir, ".overstory"), { recursive: true });
+	});
+
+	afterEach(async () => {
+		await cleanupTempDir(tempDir);
+	});
+
+	async function writeConfig(yaml: string): Promise<void> {
+		await Bun.write(join(tempDir, ".overstory", "config.yaml"), yaml);
+	}
+
+	test("defaults all exitTriggers to false", async () => {
+		const config = await loadConfig(tempDir);
+		expect(config.coordinator?.exitTriggers.allAgentsDone).toBe(false);
+		expect(config.coordinator?.exitTriggers.taskTrackerEmpty).toBe(false);
+		expect(config.coordinator?.exitTriggers.onShutdownSignal).toBe(false);
+	});
+
+	test("parses coordinator.exitTriggers from config.yaml", async () => {
+		await writeConfig(`
+coordinator:
+  exitTriggers:
+    allAgentsDone: true
+    taskTrackerEmpty: true
+    onShutdownSignal: false
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.coordinator?.exitTriggers.allAgentsDone).toBe(true);
+		expect(config.coordinator?.exitTriggers.taskTrackerEmpty).toBe(true);
+		expect(config.coordinator?.exitTriggers.onShutdownSignal).toBe(false);
+	});
+
+	test("partial exitTriggers override keeps unset values at default (false)", async () => {
+		await writeConfig(`
+coordinator:
+  exitTriggers:
+    onShutdownSignal: true
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.coordinator?.exitTriggers.allAgentsDone).toBe(false);
+		expect(config.coordinator?.exitTriggers.taskTrackerEmpty).toBe(false);
+		expect(config.coordinator?.exitTriggers.onShutdownSignal).toBe(true);
+	});
+
+	test("config.local.yaml can override exitTriggers", async () => {
+		await writeConfig(`
+coordinator:
+  exitTriggers:
+    allAgentsDone: false
+`);
+		await Bun.write(
+			join(tempDir, ".overstory", "config.local.yaml"),
+			`coordinator:\n  exitTriggers:\n    allAgentsDone: true\n`,
+		);
+		const config = await loadConfig(tempDir);
+		expect(config.coordinator?.exitTriggers.allAgentsDone).toBe(true);
+	});
+});
+
 describe("DEFAULT_CONFIG", () => {
 	test("has all required top-level keys", () => {
 		expect(DEFAULT_CONFIG.project).toBeDefined();
@@ -1124,6 +1189,13 @@ describe("DEFAULT_CONFIG", () => {
 		expect(DEFAULT_CONFIG.project.qualityGates?.[0]?.command).toBe("bun test");
 		expect(DEFAULT_CONFIG.project.qualityGates?.[1]?.command).toBe("bun run lint");
 		expect(DEFAULT_CONFIG.project.qualityGates?.[2]?.command).toBe("bun run typecheck");
+	});
+
+	test("has coordinator with exitTriggers defaulting to false", () => {
+		expect(DEFAULT_CONFIG.coordinator).toBeDefined();
+		expect(DEFAULT_CONFIG.coordinator?.exitTriggers.allAgentsDone).toBe(false);
+		expect(DEFAULT_CONFIG.coordinator?.exitTriggers.taskTrackerEmpty).toBe(false);
+		expect(DEFAULT_CONFIG.coordinator?.exitTriggers.onShutdownSignal).toBe(false);
 	});
 
 	test("DEFAULT_QUALITY_GATES matches the project default gates", () => {

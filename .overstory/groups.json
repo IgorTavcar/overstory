@@ -785,5 +785,65 @@
 		"status": "completed",
 		"createdAt": "2026-03-04T20:04:30.313Z",
 		"completedAt": "2026-03-04T21:24:26.989Z"
+	},
+	{
+		"id": "group-8ea5f2f4",
+		"name": "dispatch-batch-2",
+		"memberIssueIds": [
+			"overstory-0f5f",
+			"overstory-9cea",
+			"overstory-453b",
+			"overstory-7ece",
+			"overstory-b971",
+			"overstory-2905",
+			"overstory-abf5"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-04T23:38:45.353Z",
+		"completedAt": "2026-03-04T23:57:42.725Z"
+	},
+	{
+		"id": "group-459b41ff",
+		"name": "medium-priority-batch",
+		"memberIssueIds": [
+			"overstory-7110",
+			"overstory-b87b",
+			"overstory-5897",
+			"overstory-a85c",
+			"overstory-2aa0"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-05T14:49:40.932Z",
+		"completedAt": "2026-03-05T15:07:52.194Z"
+	},
+	{
+		"id": "group-fde94bfe",
+		"name": "coordinator-self-exit",
+		"memberIssueIds": [
+			"overstory-aad5",
+			"overstory-cdff",
+			"overstory-1b69",
+			"overstory-3137"
+		],
+		"status": "completed",
+		"createdAt": "2026-03-06T00:49:40.589Z",
+		"completedAt": "2026-03-06T01:06:21.147Z"
+	},
+	{
+		"id": "group-3e7bfc32",
+		"name": "high-priority-bugfix-batch",
+		"memberIssueIds": [
+			"overstory-0480",
+			"overstory-d331",
+			"overstory-fe42",
+			"overstory-3c76",
+			"overstory-adc5",
+			"overstory-5c08",
+			"overstory-0552",
+			"overstory-7738"
+		],
+		"status": "active",
+		"createdAt": "2026-03-06T14:07:43.286Z",
+		"completedAt": null
 	}
 ]

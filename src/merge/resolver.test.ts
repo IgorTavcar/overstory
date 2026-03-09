@@ -291,7 +291,7 @@ describe("createMergeResolver", () => {
 	});
 
 	describe("Dirty working tree pre-check", () => {
-		test("throws MergeError when unstaged changes exist on tracked files", async () => {
+		test("stashes unstaged changes and proceeds with clean merge", async () => {
 			const repoDir = await createTempGitRepo();
 			try {
 				const defaultBranch = await getDefaultBranch(repoDir);
@@ -300,7 +300,7 @@ describe("createMergeResolver", () => {
 				await runGitInDir(repoDir, ["checkout", "-b", "feature-branch"]);
 				await commitFile(repoDir, "src/feature.ts", "feature content\n");
 				await runGitInDir(repoDir, ["checkout", defaultBranch]);
-				// Modify a tracked file without staging
+				// Modify a tracked file without staging — should be stashed, not rejected
 				await Bun.write(`${repoDir}/src/main.ts`, "modified content\n");
 
 				const entry = makeTestEntry({
@@ -313,13 +313,15 @@ describe("createMergeResolver", () => {
 					reimagineEnabled: false,
 				});
 
-				await expect(resolver.resolve(entry, defaultBranch, repoDir)).rejects.toThrow(MergeError);
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
+				expect(result.success).toBe(true);
+				expect(result.tier).toBe("clean-merge");
 			} finally {
 				await cleanupTempDir(repoDir);
 			}
 		});
 
-		test("throws MergeError with message listing dirty files", async () => {
+		test("dirty non-state files are stashed, merge succeeds, files restored after", async () => {
 			const repoDir = await createTempGitRepo();
 			try {
 				const defaultBranch = await getDefaultBranch(repoDir);
@@ -327,26 +329,59 @@ describe("createMergeResolver", () => {
 				await runGitInDir(repoDir, ["checkout", "-b", "feature-branch"]);
 				await commitFile(repoDir, "src/feature.ts", "feature content\n");
 				await runGitInDir(repoDir, ["checkout", defaultBranch]);
-				await Bun.write(`${repoDir}/src/main.ts`, "modified content\n");
+				// Dirty file unrelated to the merge
+				await Bun.write(`${repoDir}/src/main.ts`, "in-progress work\n");
 
-				const entry = makeTestEntry({ branchName: "feature-branch" });
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/feature.ts"],
+				});
+
 				const resolver = createMergeResolver({ aiResolveEnabled: false, reimagineEnabled: false });
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
 
-				try {
-					await resolver.resolve(entry, defaultBranch, repoDir);
-					expect(true).toBe(false); // should not reach
-				} catch (err: unknown) {
-					expect(err).toBeInstanceOf(MergeError);
-					const mergeErr = err as MergeError;
-					expect(mergeErr.message).toContain("src/main.ts");
-					expect(mergeErr.message).toContain("Commit or stash");
-				}
+				expect(result.success).toBe(true);
+				expect(result.tier).toBe("clean-merge");
+
+				// After merge, the stashed modification should be restored
+				const mainContent = await Bun.file(`${repoDir}/src/main.ts`).text();
+				expect(mainContent).toBe("in-progress work\n");
 			} finally {
 				await cleanupTempDir(repoDir);
 			}
 		});
 
-		test("throws MergeError when staged but uncommitted changes exist", async () => {
+		test("stash pop happens after failed merge too", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+				// Set up a conflict that cannot be resolved (delete/modify)
+				await setupDeleteModifyConflict(repoDir, defaultBranch);
+				// Also leave an unrelated file dirty
+				await Bun.write(`${repoDir}/src/other.ts`, "work in progress\n");
+				await runGitInDir(repoDir, ["add", "src/other.ts"]);
+				await runGitInDir(repoDir, ["commit", "-m", "add other.ts"]);
+				await Bun.write(`${repoDir}/src/other.ts`, "modified but not committed\n");
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/test.ts"],
+				});
+
+				const resolver = createMergeResolver({ aiResolveEnabled: false, reimagineEnabled: false });
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
+
+				expect(result.success).toBe(false);
+
+				// After failed merge, the stashed modification should be restored
+				const otherContent = await Bun.file(`${repoDir}/src/other.ts`).text();
+				expect(otherContent).toBe("modified but not committed\n");
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+
+		test("staged but uncommitted changes are stashed and merge proceeds", async () => {
 			const repoDir = await createTempGitRepo();
 			try {
 				const defaultBranch = await getDefaultBranch(repoDir);
@@ -354,14 +389,20 @@ describe("createMergeResolver", () => {
 				await runGitInDir(repoDir, ["checkout", "-b", "feature-branch"]);
 				await commitFile(repoDir, "src/feature.ts", "feature content\n");
 				await runGitInDir(repoDir, ["checkout", defaultBranch]);
-				// Modify and stage (but don't commit)
+				// Modify and stage (but don't commit) — should be stashed, not rejected
 				await Bun.write(`${repoDir}/src/main.ts`, "staged but not committed\n");
 				await runGitInDir(repoDir, ["add", "src/main.ts"]);
 
-				const entry = makeTestEntry({ branchName: "feature-branch" });
-				const resolver = createMergeResolver({ aiResolveEnabled: false, reimagineEnabled: false });
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/feature.ts"],
+				});
 
-				await expect(resolver.resolve(entry, defaultBranch, repoDir)).rejects.toThrow(MergeError);
+				const resolver = createMergeResolver({ aiResolveEnabled: false, reimagineEnabled: false });
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
+
+				expect(result.success).toBe(true);
+				expect(result.tier).toBe("clean-merge");
 			} finally {
 				await cleanupTempDir(repoDir);
 			}
@@ -1627,6 +1668,189 @@ describe("createMergeResolver", () => {
 				} finally {
 					spawnSpy.mockRestore();
 				}
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+	});
+
+	describe("onMergeSuccess callback", () => {
+		test("callback is invoked on successful clean merge", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+				await setupCleanMerge(repoDir, defaultBranch);
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/feature-file.ts"],
+				});
+
+				let callbackCalled = false;
+				const resolver = createMergeResolver({
+					aiResolveEnabled: false,
+					reimagineEnabled: false,
+					onMergeSuccess: async (mergedEntry) => {
+						callbackCalled = true;
+						expect(mergedEntry.status).toBe("merged");
+						expect(mergedEntry.resolvedTier).toBe("clean-merge");
+					},
+				});
+
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
+				expect(result.success).toBe(true);
+				expect(callbackCalled).toBe(true);
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+
+		test("callback is invoked on auto-resolve success", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+				await setupContentConflict(repoDir, defaultBranch);
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/test.ts"],
+				});
+
+				let callbackCalled = false;
+				const resolver = createMergeResolver({
+					aiResolveEnabled: false,
+					reimagineEnabled: false,
+					onMergeSuccess: async (mergedEntry) => {
+						callbackCalled = true;
+						expect(mergedEntry.resolvedTier).toBe("auto-resolve");
+					},
+				});
+
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
+				expect(result.success).toBe(true);
+				expect(callbackCalled).toBe(true);
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+
+		test("callback is NOT invoked on merge failure", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+				await setupDeleteModifyConflict(repoDir, defaultBranch);
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/test.ts"],
+				});
+
+				let callbackCalled = false;
+				const resolver = createMergeResolver({
+					aiResolveEnabled: false,
+					reimagineEnabled: false,
+					onMergeSuccess: async () => {
+						callbackCalled = true;
+					},
+				});
+
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
+				expect(result.success).toBe(false);
+				expect(callbackCalled).toBe(false);
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+
+		test("callback errors are swallowed and merge result is unaffected", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+				await setupCleanMerge(repoDir, defaultBranch);
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/feature-file.ts"],
+				});
+
+				const resolver = createMergeResolver({
+					aiResolveEnabled: false,
+					reimagineEnabled: false,
+					onMergeSuccess: async () => {
+						throw new Error("callback failure");
+					},
+				});
+
+				// Should succeed despite the callback throwing
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
+				expect(result.success).toBe(true);
+				expect(result.tier).toBe("clean-merge");
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+	});
+
+	describe("Untracked files blocking merge", () => {
+		test("untracked files in merge path are auto-committed and merge succeeds", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+
+				// Feature branch adds src/new-feature.ts
+				await runGitInDir(repoDir, ["checkout", "-b", "feature-branch"]);
+				await commitFile(repoDir, "src/new-feature.ts", "feature content\n");
+				await runGitInDir(repoDir, ["checkout", defaultBranch]);
+
+				// Create the same file as untracked in the working directory —
+				// without our fix, git merge would fail: "untracked file would be overwritten"
+				await Bun.write(`${repoDir}/src/new-feature.ts`, "feature content\n");
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/new-feature.ts"],
+				});
+
+				const resolver = createMergeResolver({
+					aiResolveEnabled: false,
+					reimagineEnabled: false,
+				});
+
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
+				expect(result.success).toBe(true);
+				expect(result.tier).toBe("clean-merge");
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+
+		test("untracked files NOT in entry.filesModified are left alone", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				const defaultBranch = await getDefaultBranch(repoDir);
+				await setupCleanMerge(repoDir, defaultBranch);
+
+				// Untracked file NOT in filesModified — should not be touched
+				await Bun.write(`${repoDir}/src/scratch.ts`, "scratch work\n");
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/feature-file.ts"],
+				});
+
+				const resolver = createMergeResolver({
+					aiResolveEnabled: false,
+					reimagineEnabled: false,
+				});
+
+				const result = await resolver.resolve(entry, defaultBranch, repoDir);
+				expect(result.success).toBe(true);
+
+				// Untracked file should still exist and be untracked
+				const scratchContent = await Bun.file(`${repoDir}/src/scratch.ts`).text();
+				expect(scratchContent).toBe("scratch work\n");
+				const status = await runGitInDir(repoDir, ["status", "--porcelain"]);
+				expect(status).toContain("src/scratch.ts");
 			} finally {
 				await cleanupTempDir(repoDir);
 			}

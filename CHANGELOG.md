@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-03-06
+
+### Added
+
+#### Coordinator Completion Protocol
+- **`ov coordinator check-complete`** — new subcommand that evaluates configured exit triggers (`allAgentsDone`, `taskTrackerEmpty`, `onShutdownSignal`) and returns per-trigger status; complete = true only when ALL enabled triggers are met
+- **`coordinator.exitTriggers` config** — new `coordinator` section in `config.yaml` with three boolean triggers controlling automatic coordinator shutdown (all default to `false`)
+- Exit-trigger evaluation integrated into coordinator completion protocol — the coordinator can now self-terminate when configured conditions are met
+- `allAgentsDone` trigger also checks the merge queue to prevent premature shutdown while branches are still pending merge
+
+#### Spawn Rollback
+- **`rollbackWorktree()`** — new helper in `src/worktree/manager.ts` that removes a worktree and deletes its branch (best-effort, errors swallowed)
+- **`ov sling` rollback on spawn failure** — if agent spawn fails after worktree creation, the worktree and branch are automatically rolled back to avoid orphaned resources
+
+#### Per-Agent Cleanup
+- **`ov clean --agent <name>`** — targeted cleanup of a single agent: kills tmux session or process tree, removes worktree, deletes branch, clears agent and log directories, logs synthetic session-end event, and marks session as completed
+- **`ov stop --clean-worktree` on completed agents** — previously threw an error for completed agents; now skips the kill step and proceeds directly to worktree+branch cleanup
+
+#### Merge Reliability
+- **Auto-commit os-eco state files before merge** — runtime state files (`.seeds/`, `.overstory/`, `.mulch/`, `.canopy/`, `.greenhouse/`, `.claude/`, `CLAUDE.md`) are automatically committed with `chore: sync os-eco runtime state` to prevent dirty-tree merge errors
+- **Stash/pop dirty files during merge** — uncommitted changes are stashed before merge and popped afterward, with proper cleanup on failure
+- **`onMergeSuccess` callback** — `createMergeResolver()` now accepts an optional `onMergeSuccess` hook called after successful merge of each entry
+- **Untracked file handling** in merge resolver improved to prevent conflicts between tracked and untracked files
+
+#### Init Scaffold Commit
+- **Auto-commit scaffold files at end of `ov init`** — ecosystem directories (`.overstory/`, `.seeds/`, `.mulch/`, `.canopy/`, `.gitattributes`, `CLAUDE.md`) are committed so agent branches don't cause untracked-vs-tracked conflicts during merge
+
+### Fixed
+
+- **Headless agent kill blast radius** — `killSession("")` with tmux prefix matching could kill ALL tmux sessions; watchdog now uses `killAgent()` helper that routes headless agents through PID-based `killProcessTree()` and TUI agents through named tmux sessions
+- **Stale headless agent detection** — watchdog now checks `isProcessAlive(pid)` for headless agents instead of only checking tmux session liveness
+- **Coordinator state file commit** — completion protocols now commit os-eco state files before final steps to prevent dirty-tree errors downstream
+- **Coordinator premature issue closure** — coordinator no longer closes seeds issues before the lead agent merges its branch; `allAgentsDone` trigger checks merge queue for pending branches
+- **Coordinator auto-complete on session-end** — `ov run complete` is no longer called automatically from the per-turn Stop hook, preventing premature run completion
+- **Self-exiting coordinator** — session-end hook now handles coordinators that exit themselves (e.g., via exit triggers) without throwing errors
+- **`--json` flag stolen by parent Commander** — `.enablePositionalOptions()` added to the root program so subcommand `--json` flags are not consumed by the parent parser
+- **Pi runtime transcript parsing** — Pi v3 JSONL format stores token usage inside `message` events at `message.usage.{input, output, cacheRead}`, not in `message_end` events; parser now handles both formats with `cacheRead` counted toward input tokens (#82)
+- **Pi `getTranscriptDir()`** — now returns `~/.pi/agent/sessions/{encoded-project-path}/` instead of `null`, enabling `ov costs` for Pi agents (#82)
+
+### Changed
+
+- CLI command count: 34 → 35 (new `check-complete` subcommand under `ov coordinator`)
+
+### Testing
+
+- 3248 tests across 98 files (7677 `expect()` calls)
+
+## [0.8.5] - 2026-03-05
+
+### Added
+
+#### OpenCode Runtime Adapter
+- **`src/runtimes/opencode.ts`** — new runtime adapter for [SST OpenCode](https://opencode.ai) (`opencode` CLI), implementing the `AgentRuntime` interface with model flag support, `AGENTS.md` instruction file, and headless subprocess spawning
+- **`src/runtimes/opencode.test.ts`** — test suite (325 lines) covering spawn command building, overlay generation, guard rules, and environment setup
+
+#### NDJSON Event Tailer for Headless Agents
+- **`src/events/tailer.ts`** — background NDJSON event tailer that polls `stdout.log` files from headless agents (e.g. Sapling, OpenCode), parses new lines, and writes them into `events.db` via EventStore — enabling `ov status`, `ov dashboard`, and `ov feed` to show live progress for headless agents
+- **`src/events/tailer.test.ts`** — test suite (461 lines) covering line parsing, file tailing, stop/cleanup, and edge cases
+- **Watchdog integration** — `runDaemonTick()` now automatically starts/stops event tailers for active headless agents, with module-level tailer registry persisting across ticks
+
+#### Headless Agent Inspection
+- **`ov inspect` stdout.log fallback** — when `--no-tmux` or tmux capture fails, inspect now falls back to reading the agent's `stdout.log` NDJSON file, parsing recent events to display tool activity and progress for headless agents
+
+### Fixed
+
+- **Sapling `buildDirectSpawn()` crash** — model resolution logic now guards against `undefined` model parameter instead of unconditionally calling `.toUpperCase()` on it; `--model` flag is only appended when a model is actually specified
+- **Sapling API key leak** — `ANTHROPIC_API_KEY` is now explicitly cleared in the child process environment to prevent the parent session's key from leaking into sapling subprocesses; gateway providers re-set it as needed
+
+### Testing
+
+- 3201 tests across 98 files (7551 `expect()` calls)
+
 ## [0.8.4] - 2026-03-04
 
 ### Added
@@ -1439,7 +1511,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Biome configuration for formatting and linting
 - TypeScript strict mode with `noUncheckedIndexedAccess`
 
-[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.8.4...HEAD
+[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.8.6...HEAD
+[0.8.6]: https://github.com/jayminwest/overstory/compare/v0.8.5...v0.8.6
+[0.8.5]: https://github.com/jayminwest/overstory/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/jayminwest/overstory/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/jayminwest/overstory/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/jayminwest/overstory/compare/v0.8.1...v0.8.2

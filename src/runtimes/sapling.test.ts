@@ -365,6 +365,21 @@ describe("SaplingRuntime", () => {
 			const argv = runtime.buildDirectSpawn(opts);
 			expect(argv[3]).toBe("claude-sonnet-4-6");
 		});
+
+		test("omits --model when model is undefined (sapling uses own config)", () => {
+			const opts: DirectSpawnOpts = {
+				cwd: "/project/.overstory/worktrees/builder-1",
+				env: {},
+				instructionPath: "/project/.overstory/worktrees/builder-1/SAPLING.md",
+			};
+			const argv = runtime.buildDirectSpawn(opts);
+			expect(argv).not.toContain("--model");
+			expect(argv[0]).toBe("sp");
+			expect(argv[1]).toBe("run");
+			expect(argv).toContain("--json");
+			expect(argv).toContain("--cwd");
+			expect(argv).toContain("--system-prompt-file");
+		});
 	});
 
 	describe("buildEnv", () => {
@@ -462,6 +477,21 @@ describe("SaplingRuntime", () => {
 			const env = runtime.buildEnv(model);
 			expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("custom/opus-gateway-model");
 			expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("custom/haiku-gateway-model");
+		});
+
+		test("clears ANTHROPIC_API_KEY by default (no gateway)", () => {
+			const model: ResolvedModel = { model: "sonnet" };
+			const env = runtime.buildEnv(model);
+			expect(env.ANTHROPIC_API_KEY).toBe("");
+		});
+
+		test("buildEnv sets ANTHROPIC_API_KEY from gateway provider ANTHROPIC_AUTH_TOKEN", () => {
+			const model: ResolvedModel = {
+				model: "sonnet",
+				env: { ANTHROPIC_AUTH_TOKEN: "sk-gw-test" },
+			};
+			const env = runtime.buildEnv(model);
+			expect(env.ANTHROPIC_API_KEY).toBe("sk-gw-test");
 		});
 
 		test("does NOT forward non-model env vars from model.env", () => {
