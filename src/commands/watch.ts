@@ -19,7 +19,7 @@ import { isProcessRunning } from "../watchdog/health.ts";
 /**
  * Format a health check for display.
  */
-function formatCheck(check: HealthCheck): string {
+export function formatCheck(check: HealthCheck): string {
 	const actionIcon =
 		check.action === "terminate"
 			? "x"
@@ -42,7 +42,7 @@ function formatCheck(check: HealthCheck): string {
  * Read the PID from the watchdog PID file.
  * Returns null if the file doesn't exist or can't be parsed.
  */
-async function readPidFile(pidFilePath: string): Promise<number | null> {
+export async function readPidFile(pidFilePath: string): Promise<number | null> {
 	const file = Bun.file(pidFilePath);
 	const exists = await file.exists();
 	if (!exists) {
@@ -64,14 +64,14 @@ async function readPidFile(pidFilePath: string): Promise<number | null> {
 /**
  * Write a PID to the watchdog PID file.
  */
-async function writePidFile(pidFilePath: string, pid: number): Promise<void> {
+export async function writePidFile(pidFilePath: string, pid: number): Promise<void> {
 	await Bun.write(pidFilePath, `${pid}\n`);
 }
 
 /**
  * Remove the watchdog PID file.
  */
-async function removePidFile(pidFilePath: string): Promise<void> {
+export async function removePidFile(pidFilePath: string): Promise<void> {
 	const { unlink } = await import("node:fs/promises");
 	try {
 		await unlink(pidFilePath);
@@ -84,7 +84,7 @@ async function removePidFile(pidFilePath: string): Promise<void> {
  * Resolve the path to the overstory binary for re-launching.
  * Uses `which overstory` first, then falls back to process.argv.
  */
-async function resolveOverstoryBin(): Promise<string> {
+export async function resolveOverstoryBin(): Promise<string> {
 	try {
 		const proc = Bun.spawn(["which", "ov"], {
 			stdout: "pipe",

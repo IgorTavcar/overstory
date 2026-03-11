@@ -158,7 +158,7 @@ async function checkBdCgoSupport(): Promise<DoctorCheck> {
 /**
  * Check if a short alias for a CLI tool is available.
  */
-async function checkAlias(
+export async function checkAlias(
 	toolName: string,
 	alias: string,
 	installHint?: string,
@@ -209,7 +209,7 @@ async function checkAlias(
 /**
  * Check if a CLI tool is available by attempting to run it with a version flag.
  */
-async function checkTool(
+export async function checkTool(
 	name: string,
 	versionFlag: string,
 	required: boolean,

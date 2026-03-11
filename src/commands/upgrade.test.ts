@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { createUpgradeCommand } from "./upgrade.ts";
+import { createUpgradeCommand, fetchLatestVersion, getCurrentVersion } from "./upgrade.ts";
 
 describe("createUpgradeCommand — CLI structure", () => {
 	test("command has correct name", () => {
@@ -42,5 +42,21 @@ describe("createUpgradeCommand — CLI structure", () => {
 		const cmd = createUpgradeCommand();
 		// Commander Command instances have a .parse method
 		expect(typeof cmd.parse).toBe("function");
+	});
+});
+
+describe("getCurrentVersion", () => {
+	test("returns a semver string", async () => {
+		const version = await getCurrentVersion();
+		// Semver format: major.minor.patch (possibly with pre-release suffix)
+		expect(version).toMatch(/^\d+\.\d+\.\d+/);
+	});
+});
+
+describe("fetchLatestVersion", () => {
+	test("rejects for a nonexistent package", async () => {
+		await expect(
+			fetchLatestVersion("nonexistent-package-xyz-12345-no-such-thing"),
+		).rejects.toThrow();
 	});
 });

@@ -81,7 +81,7 @@ function generateGroupId(): string {
 /**
  * Create a new task group.
  */
-async function createGroup(
+export async function createGroup(
 	projectRoot: string,
 	name: string,
 	issueIds: string[],
@@ -125,7 +125,7 @@ async function createGroup(
 /**
  * Add issues to an existing group.
  */
-async function addToGroup(
+export async function addToGroup(
 	projectRoot: string,
 	groupId: string,
 	issueIds: string[],
@@ -173,7 +173,7 @@ async function addToGroup(
 /**
  * Remove issues from an existing group.
  */
-async function removeFromGroup(
+export async function removeFromGroup(
 	projectRoot: string,
 	groupId: string,
 	issueIds: string[],
@@ -212,7 +212,7 @@ async function removeFromGroup(
  * Get progress for a single group. Queries the tracker for member issue statuses.
  * Auto-closes the group if all members are closed.
  */
-async function getGroupProgress(
+export async function getGroupProgress(
 	projectRoot: string,
 	group: TaskGroup,
 	groups: TaskGroup[],
@@ -285,7 +285,7 @@ async function getGroupProgress(
 /**
  * Print a group's progress in human-readable format.
  */
-function printGroupProgress(progress: TaskGroupProgress): void {
+export function printGroupProgress(progress: TaskGroupProgress): void {
 	const w = process.stdout.write.bind(process.stdout);
 	const { group, total, completed, inProgress, blocked, open } = progress;
 	const status = group.status === "completed" ? "[completed]" : "[active]";

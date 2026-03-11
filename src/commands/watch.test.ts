@@ -3,7 +3,15 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTempDir } from "../test-helpers.ts";
-import { watchCommand } from "./watch.ts";
+import type { HealthCheck } from "../types.ts";
+import {
+	formatCheck,
+	readPidFile,
+	removePidFile,
+	resolveOverstoryBin,
+	watchCommand,
+	writePidFile,
+} from "./watch.ts";
 
 /**
  * Tests for `overstory watch` command.
@@ -142,5 +150,158 @@ describe("watchCommand", () => {
 			expect(content.trim()).not.toBe("999999");
 		}
 		// If it doesn't exist, that's also valid (spawn failed before writing new PID)
+	});
+});
+
+describe("formatCheck", () => {
+	function makeCheck(overrides: Partial<HealthCheck>): HealthCheck {
+		return {
+			agentName: "test-agent",
+			timestamp: new Date().toISOString(),
+			processAlive: true,
+			tmuxAlive: true,
+			pidAlive: true,
+			lastActivity: new Date().toISOString(),
+			state: "working",
+			action: "none",
+			reconciliationNote: null,
+			...overrides,
+		};
+	}
+
+	test("terminate action uses x icon", () => {
+		const result = formatCheck(makeCheck({ action: "terminate" }));
+		expect(result).toMatch(/^x /);
+	});
+
+	test("escalate action uses ! icon", () => {
+		const result = formatCheck(makeCheck({ action: "escalate" }));
+		expect(result).toMatch(/^! /);
+	});
+
+	test("investigate action uses > icon", () => {
+		const result = formatCheck(makeCheck({ action: "investigate" }));
+		expect(result).toMatch(/^> /);
+	});
+
+	test("pidAlive true shows up", () => {
+		const result = formatCheck(makeCheck({ pidAlive: true }));
+		expect(result).toContain("pid=up");
+	});
+
+	test("pidAlive false shows down", () => {
+		const result = formatCheck(makeCheck({ pidAlive: false }));
+		expect(result).toContain("pid=down");
+	});
+
+	test("pidAlive null shows n/a", () => {
+		const result = formatCheck(makeCheck({ pidAlive: null }));
+		expect(result).toContain("pid=n/a");
+	});
+
+	test("includes reconciliation note when present", () => {
+		const result = formatCheck(makeCheck({ reconciliationNote: "stale session" }));
+		expect(result).toContain("[stale session]");
+	});
+
+	test("no reconciliation note brackets when null", () => {
+		const result = formatCheck(makeCheck({ reconciliationNote: null }));
+		expect(result).not.toContain("[");
+	});
+
+	test("includes agent name and state", () => {
+		const result = formatCheck(makeCheck({ agentName: "builder-1", state: "stalled" }));
+		expect(result).toContain("builder-1");
+		expect(result).toContain("stalled");
+	});
+});
+
+describe("readPidFile", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pid-test-"));
+	});
+
+	afterEach(async () => {
+		await cleanupTempDir(tempDir);
+	});
+
+	test("returns pid from valid file", async () => {
+		const pidPath = join(tempDir, "test.pid");
+		await Bun.write(pidPath, "12345\n");
+		const pid = await readPidFile(pidPath);
+		expect(pid).toBe(12345);
+	});
+
+	test("returns null for nonexistent file", async () => {
+		const pid = await readPidFile(join(tempDir, "missing.pid"));
+		expect(pid).toBeNull();
+	});
+
+	test("returns null for non-numeric content", async () => {
+		const pidPath = join(tempDir, "bad.pid");
+		await Bun.write(pidPath, "not-a-number\n");
+		const pid = await readPidFile(pidPath);
+		expect(pid).toBeNull();
+	});
+
+	test("returns null for negative pid", async () => {
+		const pidPath = join(tempDir, "neg.pid");
+		await Bun.write(pidPath, "-1\n");
+		const pid = await readPidFile(pidPath);
+		expect(pid).toBeNull();
+	});
+});
+
+describe("writePidFile", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pid-write-test-"));
+	});
+
+	afterEach(async () => {
+		await cleanupTempDir(tempDir);
+	});
+
+	test("roundtrip write then read", async () => {
+		const pidPath = join(tempDir, "roundtrip.pid");
+		await writePidFile(pidPath, 42);
+		const pid = await readPidFile(pidPath);
+		expect(pid).toBe(42);
+	});
+});
+
+describe("removePidFile", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pid-rm-test-"));
+	});
+
+	afterEach(async () => {
+		await cleanupTempDir(tempDir);
+	});
+
+	test("removes existing file", async () => {
+		const pidPath = join(tempDir, "remove.pid");
+		await Bun.write(pidPath, "99\n");
+		expect(await Bun.file(pidPath).exists()).toBe(true);
+		await removePidFile(pidPath);
+		expect(await Bun.file(pidPath).exists()).toBe(false);
+	});
+
+	test("does not throw for nonexistent file", async () => {
+		await removePidFile(join(tempDir, "nope.pid"));
+		// No throw = pass
+	});
+});
+
+describe("resolveOverstoryBin", () => {
+	test("returns a non-empty string", async () => {
+		const bin = await resolveOverstoryBin();
+		expect(typeof bin).toBe("string");
+		expect(bin.length).toBeGreaterThan(0);
 	});
 });

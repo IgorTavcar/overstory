@@ -19,7 +19,7 @@ import { createMetricsStore } from "../metrics/store.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import { cleanupTempDir, createTempGitRepo } from "../test-helpers.ts";
 import type { AgentSession } from "../types.ts";
-import { cleanCommand } from "./clean.ts";
+import { cleanCommand, clearDirectory, deleteFile, resetJsonFile, wipeSqliteDb } from "./clean.ts";
 
 let tempDir: string;
 let overstoryDir: string;
@@ -790,5 +790,113 @@ describe("--agent", () => {
 		// No agent or logs dirs — should not error
 		await cleanCommand({ agent: "test-builder" });
 		expect(stdoutOutput).toContain("Agent cleaned");
+	});
+});
+
+// === Unit tests for exported utility functions ===
+
+describe("wipeSqliteDb", () => {
+	test("deletes main db and WAL/SHM companion files", async () => {
+		const dbPath = join(overstoryDir, "test-wipe.db");
+		// Create a real SQLite DB so WAL files get created
+		const { Database } = await import("bun:sqlite");
+		const db = new Database(dbPath);
+		db.exec("PRAGMA journal_mode=WAL");
+		db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+		db.exec("INSERT INTO t VALUES (1)");
+		db.close();
+
+		// Verify at least the main file exists
+		expect(existsSync(dbPath)).toBe(true);
+
+		const result = await wipeSqliteDb(dbPath);
+		expect(result).toBe(true);
+
+		// Main DB file should be gone
+		expect(existsSync(dbPath)).toBe(false);
+		// WAL and SHM companions should also be gone
+		expect(existsSync(`${dbPath}-wal`)).toBe(false);
+		expect(existsSync(`${dbPath}-shm`)).toBe(false);
+	});
+
+	test("returns false when db file does not exist", async () => {
+		const dbPath = join(overstoryDir, "nonexistent.db");
+		const result = await wipeSqliteDb(dbPath);
+		expect(result).toBe(false);
+	});
+});
+
+describe("resetJsonFile", () => {
+	test("resets existing JSON file to empty array", async () => {
+		const filePath = join(overstoryDir, "test-reset.json");
+		await Bun.write(filePath, '[{"id":"1"},{"id":"2"}]');
+
+		const result = await resetJsonFile(filePath);
+		expect(result).toBe(true);
+
+		const content = await Bun.file(filePath).text();
+		expect(content).toBe("[]\n");
+	});
+
+	test("returns false for nonexistent file", async () => {
+		const filePath = join(overstoryDir, "nonexistent.json");
+		const result = await resetJsonFile(filePath);
+		expect(result).toBe(false);
+	});
+});
+
+describe("clearDirectory", () => {
+	test("clears files from a directory", async () => {
+		const dirPath = join(overstoryDir, "clear-test");
+		await mkdir(dirPath, { recursive: true });
+		await writeFile(join(dirPath, "file1.txt"), "hello");
+		await writeFile(join(dirPath, "file2.txt"), "world");
+
+		const result = await clearDirectory(dirPath);
+		expect(result).toBe(true);
+
+		const entries = await readdir(dirPath);
+		expect(entries).toHaveLength(0);
+	});
+
+	test("returns false for empty directory", async () => {
+		const dirPath = join(overstoryDir, "empty-dir");
+		await mkdir(dirPath, { recursive: true });
+
+		const result = await clearDirectory(dirPath);
+		expect(result).toBe(false);
+	});
+
+	test("returns false for nonexistent directory", async () => {
+		const result = await clearDirectory(join(overstoryDir, "no-such-dir"));
+		expect(result).toBe(false);
+	});
+
+	test("recursively removes subdirectories", async () => {
+		const dirPath = join(overstoryDir, "nested-clear");
+		await mkdir(join(dirPath, "sub", "deep"), { recursive: true });
+		await writeFile(join(dirPath, "sub", "deep", "file.txt"), "data");
+
+		const result = await clearDirectory(dirPath);
+		expect(result).toBe(true);
+
+		const entries = await readdir(dirPath);
+		expect(entries).toHaveLength(0);
+	});
+});
+
+describe("deleteFile", () => {
+	test("deletes an existing file", async () => {
+		const filePath = join(overstoryDir, "to-delete.txt");
+		await writeFile(filePath, "delete me");
+
+		const result = await deleteFile(filePath);
+		expect(result).toBe(true);
+		expect(existsSync(filePath)).toBe(false);
+	});
+
+	test("returns false for nonexistent file", async () => {
+		const result = await deleteFile(join(overstoryDir, "no-such-file.txt"));
+		expect(result).toBe(false);
 	});
 });

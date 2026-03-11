@@ -26,13 +26,13 @@ export interface UpgradeOptions {
 	json?: boolean;
 }
 
-async function getCurrentVersion(): Promise<string> {
+export async function getCurrentVersion(): Promise<string> {
 	const pkgPath = new URL("../../package.json", import.meta.url);
 	const pkg = JSON.parse(await Bun.file(pkgPath).text()) as { version: string };
 	return pkg.version;
 }
 
-async function fetchLatestVersion(packageName: string): Promise<string> {
+export async function fetchLatestVersion(packageName: string): Promise<string> {
 	const res = await fetch(`https://registry.npmjs.org/${packageName}/latest`);
 	if (!res.ok) {
 		throw new Error(
