@@ -32,7 +32,7 @@ export interface PrimeOptions {
 /**
  * Format the agent manifest section for output.
  */
-function formatManifest(manifest: AgentManifest): string {
+export function formatManifest(manifest: AgentManifest): string {
 	const lines: string[] = [];
 	for (const [name, def] of Object.entries(manifest.agents)) {
 		const caps = def.capabilities.join(", ");
@@ -45,7 +45,7 @@ function formatManifest(manifest: AgentManifest): string {
 /**
  * Format recent session metrics for output.
  */
-function formatMetrics(sessions: SessionMetrics[]): string {
+export function formatMetrics(sessions: SessionMetrics[]): string {
 	if (sessions.length === 0) {
 		return "No recent sessions.";
 	}

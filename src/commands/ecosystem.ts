@@ -21,13 +21,13 @@ export interface EcosystemOptions {
 	json?: boolean;
 }
 
-interface DoctorSummary {
+export interface DoctorSummary {
 	pass: number;
 	warn: number;
 	fail: number;
 }
 
-interface ToolResult {
+export interface ToolResult {
 	name: string;
 	cli: string;
 	npm: string;
@@ -39,7 +39,7 @@ interface ToolResult {
 	latestError?: string;
 }
 
-async function getInstalledVersion(cli: string): Promise<string | null> {
+export async function getInstalledVersion(cli: string): Promise<string | null> {
 	// Try --version --json first
 	try {
 		const proc = Bun.spawn([cli, "--version", "--json"], {
@@ -158,7 +158,7 @@ async function checkTool(tool: { name: string; cli: string; npm: string }): Prom
 	};
 }
 
-function formatDoctorLine(summary: DoctorSummary): string {
+export function formatDoctorLine(summary: DoctorSummary): string {
 	const parts: string[] = [];
 	if (summary.pass > 0) parts.push(color.green(`${summary.pass} passed`));
 	if (summary.warn > 0) parts.push(color.yellow(`${summary.warn} warn`));
@@ -166,7 +166,7 @@ function formatDoctorLine(summary: DoctorSummary): string {
 	return parts.length > 0 ? parts.join(", ") : "no checks";
 }
 
-function printHumanOutput(results: ToolResult[]): void {
+export function printHumanOutput(results: ToolResult[]): void {
 	process.stdout.write(`${brand.bold("os-eco Ecosystem")}\n`);
 	process.stdout.write(`${thickSeparator()}\n`);
 	process.stdout.write("\n");

@@ -277,7 +277,7 @@ async function deleteOrphanedBranches(root: string): Promise<number> {
 /**
  * Delete a SQLite database file and its WAL/SHM companions.
  */
-async function wipeSqliteDb(dbPath: string): Promise<boolean> {
+export async function wipeSqliteDb(dbPath: string): Promise<boolean> {
 	const extensions = ["", "-wal", "-shm"];
 	let wiped = false;
 	for (const ext of extensions) {
@@ -294,7 +294,7 @@ async function wipeSqliteDb(dbPath: string): Promise<boolean> {
 /**
  * Reset a JSON file to an empty array.
  */
-async function resetJsonFile(path: string): Promise<boolean> {
+export async function resetJsonFile(path: string): Promise<boolean> {
 	const file = Bun.file(path);
 	if (await file.exists()) {
 		await Bun.write(path, "[]\n");
@@ -306,7 +306,7 @@ async function resetJsonFile(path: string): Promise<boolean> {
 /**
  * Clear all entries inside a directory but keep the directory itself.
  */
-async function clearDirectory(dirPath: string): Promise<boolean> {
+export async function clearDirectory(dirPath: string): Promise<boolean> {
 	try {
 		const entries = await readdir(dirPath);
 		for (const entry of entries) {
@@ -322,7 +322,7 @@ async function clearDirectory(dirPath: string): Promise<boolean> {
 /**
  * Delete a single file if it exists.
  */
-async function deleteFile(path: string): Promise<boolean> {
+export async function deleteFile(path: string): Promise<boolean> {
 	try {
 		await unlink(path);
 		return true;

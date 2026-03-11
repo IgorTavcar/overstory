@@ -23,7 +23,7 @@ import type { LogEvent } from "../types.ts";
  * Parse relative time formats like "1h", "30m", "2d", "10s" into a Date object.
  * Falls back to parsing as ISO 8601 if not in relative format.
  */
-function parseRelativeTime(timeStr: string): Date {
+export function parseRelativeTime(timeStr: string): Date {
 	const relativeMatch = /^(\d+)(s|m|h|d)$/.exec(timeStr);
 	if (relativeMatch) {
 		const value = Number.parseInt(relativeMatch[1] ?? "0", 10);
@@ -56,7 +56,7 @@ function parseRelativeTime(timeStr: string): Date {
 /**
  * Build a detail string for a log event based on its data.
  */
-function buildLogDetail(event: LogEvent): string {
+export function buildLogDetail(event: LogEvent): string {
 	const parts: string[] = [];
 
 	for (const [key, value] of Object.entries(event.data)) {
@@ -75,7 +75,7 @@ function buildLogDetail(event: LogEvent): string {
  * Discover all events.ndjson files in the logs directory.
  * Returns array of { agentName, sessionTimestamp, path }.
  */
-async function discoverLogFiles(
+export async function discoverLogFiles(
 	logsDir: string,
 	agentFilter?: string,
 ): Promise<
@@ -146,7 +146,7 @@ async function discoverLogFiles(
  * Parse a single NDJSON file and return log events.
  * Silently skips invalid lines.
  */
-async function parseLogFile(path: string): Promise<LogEvent[]> {
+export async function parseLogFile(path: string): Promise<LogEvent[]> {
 	const events: LogEvent[] = [];
 
 	try {
@@ -185,7 +185,7 @@ async function parseLogFile(path: string): Promise<LogEvent[]> {
 /**
  * Apply filters to log events.
  */
-function filterEvents(
+export function filterEvents(
 	events: LogEvent[],
 	filters: {
 		level?: string;
@@ -256,6 +256,94 @@ function printLogs(events: LogEvent[]): void {
 }
 
 /**
+ * Process one poll tick of log tailing: scan discovered log files for new data
+ * since lastKnownSizes, parse new lines, apply filters, and return the count
+ * of new events found.
+ *
+ * @param logFiles - Array of discovered log file paths
+ * @param lastKnownSizes - Map of file path to last-seen byte offset (mutated in place)
+ * @param filters - Level filter to apply
+ * @returns Number of new events emitted
+ */
+export async function pollLogTick(
+	logFiles: Array<{ path: string }>,
+	lastKnownSizes: Map<string, number>,
+	filters: { level?: string },
+): Promise<number> {
+	const w = process.stdout.write.bind(process.stdout);
+	let emitted = 0;
+
+	for (const { path } of logFiles) {
+		const file = Bun.file(path);
+		let fileSize: number;
+
+		try {
+			const fileStat = await stat(path);
+			fileSize = fileStat.size;
+		} catch {
+			continue; // File disappeared
+		}
+
+		const lastPosition = lastKnownSizes.get(path) ?? 0;
+
+		if (fileSize > lastPosition) {
+			// New data available
+			try {
+				const fullText = await file.text();
+				const newText = fullText.slice(lastPosition);
+				const lines = newText.split("\n");
+
+				for (const line of lines) {
+					if (line.trim() === "") {
+						continue;
+					}
+
+					try {
+						const parsed: unknown = JSON.parse(line);
+						if (
+							typeof parsed === "object" &&
+							parsed !== null &&
+							"timestamp" in parsed &&
+							"event" in parsed
+						) {
+							const event = parsed as LogEvent;
+
+							// Apply level filter
+							if (filters.level !== undefined && event.level !== filters.level) {
+								continue;
+							}
+
+							// Print immediately
+							const time = formatAbsoluteTime(event.timestamp);
+							const levelColorFn = logLevelColor(event.level);
+							const levelStr = logLevelLabel(event.level);
+
+							const agentLabel = event.agentName ? `[${event.agentName}]` : "[unknown]";
+							const detail = buildLogDetail(event);
+							const detailSuffix = detail ? ` ${color.dim(detail)}` : "";
+
+							w(
+								`${time} ${levelColorFn(levelStr)} ` +
+									`${event.event} ${color.dim(agentLabel)}${detailSuffix}\n`,
+							);
+							emitted++;
+						}
+					} catch {
+						// Invalid JSON line, skip
+					}
+				}
+
+				lastKnownSizes.set(path, fileSize);
+			} catch {
+				// File read error, skip
+			}
+		}
+	}
+
+	return emitted;
+}
+
+/**
  * Follow mode: tail logs in real time.
  */
 async function followLogs(
@@ -274,72 +362,7 @@ async function followLogs(
 
 	while (true) {
 		const discovered = await discoverLogFiles(logsDir, filters.agent);
-
-		for (const { path } of discovered) {
-			const file = Bun.file(path);
-			let fileSize: number;
-
-			try {
-				const fileStat = await stat(path);
-				fileSize = fileStat.size;
-			} catch {
-				continue; // File disappeared
-			}
-
-			const lastPosition = filePositions.get(path) ?? 0;
-
-			if (fileSize > lastPosition) {
-				// New data available
-				try {
-					const fullText = await file.text();
-					const newText = fullText.slice(lastPosition);
-					const lines = newText.split("\n");
-
-					for (const line of lines) {
-						if (line.trim() === "") {
-							continue;
-						}
-
-						try {
-							const parsed: unknown = JSON.parse(line);
-							if (
-								typeof parsed === "object" &&
-								parsed !== null &&
-								"timestamp" in parsed &&
-								"event" in parsed
-							) {
-								const event = parsed as LogEvent;
-
-								// Apply level filter
-								if (filters.level !== undefined && event.level !== filters.level) {
-									continue;
-								}
-
-								// Print immediately
-								const time = formatAbsoluteTime(event.timestamp);
-								const levelColorFn = logLevelColor(event.level);
-								const levelStr = logLevelLabel(event.level);
-
-								const agentLabel = event.agentName ? `[${event.agentName}]` : "[unknown]";
-								const detail = buildLogDetail(event);
-								const detailSuffix = detail ? ` ${color.dim(detail)}` : "";
-
-								w(
-									`${time} ${levelColorFn(levelStr)} ` +
-										`${event.event} ${color.dim(agentLabel)}${detailSuffix}\n`,
-								);
-							}
-						} catch {
-							// Invalid JSON line, skip
-						}
-					}
-
-					filePositions.set(path, fileSize);
-				} catch {
-					// File read error, skip
-				}
-			}
-		}
+		await pollLogTick(discovered, filePositions, { level: filters.level });
 
 		// Sleep for 1 second before next poll
 		await Bun.sleep(1000);
