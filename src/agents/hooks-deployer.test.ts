@@ -2609,3 +2609,140 @@ describe("escapeForSingleQuotedShell", () => {
 		expect(parsed.reason).toContain("ov sling");
 	});
 });
+
+describe("coordination agent git add blocking", () => {
+	/**
+	 * Helper to run the bash file guard script against a given command.
+	 * Simulates what Claude Code does: pipes JSON with the command on stdin.
+	 * Returns { exitCode, stdout } for assertions.
+	 */
+	async function runGuardScript(
+		script: string,
+		command: string,
+	): Promise<{ exitCode: number; stdout: string }> {
+		// Strip the env guard so we can run without OVERSTORY_AGENT_NAME
+		const noEnvGuard = script.replace('[ -z "$OVERSTORY_AGENT_NAME" ] && exit 0; ', "");
+		const input = JSON.stringify({ tool_name: "Bash", tool_input: { command } });
+		const proc = Bun.spawn(["sh", "-c", noEnvGuard], {
+			stdout: "pipe",
+			stderr: "pipe",
+			stdin: "pipe",
+			env: { ...process.env, OVERSTORY_AGENT_NAME: "test-agent" },
+		});
+		proc.stdin.write(input);
+		proc.stdin.end();
+		const stdout = await new Response(proc.stdout).text();
+		const exitCode = await proc.exited;
+		return { exitCode, stdout: stdout.trim() };
+	}
+
+	test("git add . is blocked for coordinator capability", async () => {
+		const script = buildBashFileGuardScript(
+			"coordinator",
+			["git add", "git commit"],
+			["\\bgit\\s+add\\s+\\.$", "\\bgit\\s+add\\s+-[aA]\\b", "\\bgit\\s+add\\s+--all\\b"],
+		);
+		const result = await runGuardScript(script, "git add .");
+		expect(result.stdout).toContain('"decision":"block"');
+		expect(result.stdout).toContain("git add must target specific files");
+	});
+
+	test("git add -A is blocked for coordinator capability", async () => {
+		const script = buildBashFileGuardScript(
+			"coordinator",
+			["git add", "git commit"],
+			["\\bgit\\s+add\\s+\\.$", "\\bgit\\s+add\\s+-[aA]\\b", "\\bgit\\s+add\\s+--all\\b"],
+		);
+		const result = await runGuardScript(script, "git add -A");
+		expect(result.stdout).toContain('"decision":"block"');
+		expect(result.stdout).toContain("git add must target specific files");
+	});
+
+	test("git add --all is blocked for coordinator capability", async () => {
+		const script = buildBashFileGuardScript(
+			"coordinator",
+			["git add", "git commit"],
+			["\\bgit\\s+add\\s+\\.$", "\\bgit\\s+add\\s+-[aA]\\b", "\\bgit\\s+add\\s+--all\\b"],
+		);
+		const result = await runGuardScript(script, "git add --all");
+		expect(result.stdout).toContain('"decision":"block"');
+		expect(result.stdout).toContain("git add must target specific files");
+	});
+
+	test("git add src/specific-file.ts is allowed for coordinator capability", async () => {
+		const script = buildBashFileGuardScript(
+			"coordinator",
+			["git add", "git commit"],
+			["\\bgit\\s+add\\s+\\.$", "\\bgit\\s+add\\s+-[aA]\\b", "\\bgit\\s+add\\s+--all\\b"],
+		);
+		const result = await runGuardScript(script, "git add src/specific-file.ts");
+		// Should NOT contain a block decision — command should be allowed
+		expect(result.stdout).not.toContain('"decision":"block"');
+	});
+
+	test("git add .overstory/sessions.db is allowed for coordinator capability", async () => {
+		const script = buildBashFileGuardScript(
+			"coordinator",
+			["git add", "git commit"],
+			["\\bgit\\s+add\\s+\\.$", "\\bgit\\s+add\\s+-[aA]\\b", "\\bgit\\s+add\\s+--all\\b"],
+		);
+		const result = await runGuardScript(script, "git add .overstory/sessions.db");
+		expect(result.stdout).not.toContain('"decision":"block"');
+	});
+
+	test("git add .mulch/ .seeds/ is allowed for coordinator capability", async () => {
+		const script = buildBashFileGuardScript(
+			"coordinator",
+			["git add", "git commit"],
+			["\\bgit\\s+add\\s+\\.$", "\\bgit\\s+add\\s+-[aA]\\b", "\\bgit\\s+add\\s+--all\\b"],
+		);
+		const result = await runGuardScript(script, "git add .mulch/ .seeds/");
+		expect(result.stdout).not.toContain('"decision":"block"');
+	});
+
+	test("getCapabilityGuards passes blocked overrides for coordinator", () => {
+		const guards = getCapabilityGuards("coordinator");
+		const bashGuards = guards.filter((g) => g.matcher === "Bash");
+		// Find the file guard (contains "git add must target specific files")
+		const fileGuard = bashGuards.find((g) =>
+			g.hooks[0]?.command.includes("git add must target specific files"),
+		);
+		expect(fileGuard).toBeDefined();
+	});
+
+	test("getCapabilityGuards passes blocked overrides for supervisor", () => {
+		const guards = getCapabilityGuards("supervisor");
+		const bashGuards = guards.filter((g) => g.matcher === "Bash");
+		const fileGuard = bashGuards.find((g) =>
+			g.hooks[0]?.command.includes("git add must target specific files"),
+		);
+		expect(fileGuard).toBeDefined();
+	});
+
+	test("getCapabilityGuards passes blocked overrides for monitor", () => {
+		const guards = getCapabilityGuards("monitor");
+		const bashGuards = guards.filter((g) => g.matcher === "Bash");
+		const fileGuard = bashGuards.find((g) =>
+			g.hooks[0]?.command.includes("git add must target specific files"),
+		);
+		expect(fileGuard).toBeDefined();
+	});
+
+	test("getCapabilityGuards does NOT add blocked overrides for scout", () => {
+		const guards = getCapabilityGuards("scout");
+		const bashGuards = guards.filter((g) => g.matcher === "Bash");
+		const fileGuard = bashGuards.find((g) =>
+			g.hooks[0]?.command.includes("git add must target specific files"),
+		);
+		expect(fileGuard).toBeUndefined();
+	});
+
+	test("getCapabilityGuards does NOT add blocked overrides for builder", () => {
+		const guards = getCapabilityGuards("builder");
+		const bashGuards = guards.filter((g) => g.matcher === "Bash");
+		const fileGuard = bashGuards.find((g) =>
+			g.hooks[0]?.command.includes("git add must target specific files"),
+		);
+		expect(fileGuard).toBeUndefined();
+	});
+});

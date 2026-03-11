@@ -4,6 +4,7 @@ import { DEFAULT_QUALITY_GATES } from "../config.ts";
 import { AgentError } from "../errors.ts";
 import type { QualityGate } from "../types.ts";
 import {
+	COORDINATION_BLOCKED_GIT_ADD,
 	DANGEROUS_BASH_PATTERNS,
 	INTERACTIVE_TOOLS,
 	NATIVE_TEAM_TOOLS,
@@ -250,17 +251,42 @@ export function getDangerGuards(agentName: string): HookEntry[] {
  * Uses a whitelist-first approach: if the command matches a known-safe prefix, it passes.
  * Otherwise, it checks against dangerous patterns and blocks if any match.
  *
+ * When blockedOverrides are provided, commands that match a safe prefix are additionally
+ * checked against the override patterns. If a command matches both a safe prefix AND a
+ * blocked override, it is blocked. This prevents broad commands like "git add ." from
+ * passing through the "git add" safe prefix.
+ *
  * @param capability - The agent capability, included in block reason messages
  * @param extraSafePrefixes - Additional safe prefixes for this capability (e.g. git add/commit for coordinators)
+ * @param blockedOverrides - Patterns that block even when a safe prefix matches (e.g. "git add .")
  */
 export function buildBashFileGuardScript(
 	capability: string,
 	extraSafePrefixes: string[] = [],
+	blockedOverrides: string[] = [],
 ): string {
+	// Build the blocked override check (inserted inside safe prefix checks)
+	const blockedOverrideCheck =
+		blockedOverrides.length > 0
+			? [
+					`if echo "$CMD" | grep -qE '${blockedOverrides.join("|")}'; then`,
+					`  echo '{"decision":"block","reason":"git add must target specific files — broad patterns (., -A, --all) are not allowed for ${capability} agents"}';`,
+					"  exit 0;",
+					"fi;",
+				].join(" ")
+			: "";
+
 	// Build the safe prefix check: if command starts with any safe prefix, allow it
+	// When blockedOverrides exist, check them before allowing
 	const allSafePrefixes = [...SAFE_BASH_PREFIXES, ...extraSafePrefixes];
 	const safePrefixChecks = allSafePrefixes
-		.map((prefix) => `if echo "$CMD" | grep -qE '^\\s*${prefix}'; then exit 0; fi;`)
+		.map((prefix) => {
+			if (blockedOverrideCheck && extraSafePrefixes.includes(prefix)) {
+				// For extra safe prefixes (coordination), check blocked overrides first
+				return `if echo "$CMD" | grep -qE '^\\s*${prefix}'; then ${blockedOverrideCheck} exit 0; fi;`;
+			}
+			return `if echo "$CMD" | grep -qE '^\\s*${prefix}'; then exit 0; fi;`;
+		})
 		.join(" ");
 
 	// Build the dangerous pattern check
@@ -272,7 +298,7 @@ export function buildBashFileGuardScript(
 		"read -r INPUT;",
 		// Extract command value from JSON (with optional space after colon)
 		'CMD=$(echo "$INPUT" | sed \'s/.*"command": *"\\([^"]*\\)".*/\\1/\');',
-		// First: whitelist safe commands
+		// First: whitelist safe commands (with optional blocked override checks)
 		safePrefixChecks,
 		// Then: check for dangerous patterns
 		`if echo "$CMD" | grep -qE '${dangerPattern}'; then`,
@@ -485,15 +511,18 @@ export function getCapabilityGuards(capability: string, qualityGates?: QualityGa
 		guards.push(...toolGuards);
 
 		// Coordination capabilities get git add/commit whitelisted for task/mulch sync
-		const extraSafe = COORDINATION_CAPABILITIES.has(capability)
+		// but broad git add (., -A, --all) is blocked to prevent staging manual edits
+		const isCoordination = COORDINATION_CAPABILITIES.has(capability);
+		const extraSafe = isCoordination
 			? [...COORDINATION_SAFE_PREFIXES, ...gatePrefixes]
 			: gatePrefixes;
+		const blockedOverrides = isCoordination ? COORDINATION_BLOCKED_GIT_ADD : [];
 		const bashFileGuard: HookEntry = {
 			matcher: "Bash",
 			hooks: [
 				{
 					type: "command",
-					command: buildBashFileGuardScript(capability, extraSafe),
+					command: buildBashFileGuardScript(capability, extraSafe, blockedOverrides),
 				},
 			],
 		};

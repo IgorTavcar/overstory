@@ -78,6 +78,17 @@ export const DANGEROUS_BASH_PATTERNS = [
 ];
 
 /**
+ * Git add patterns that are blocked even for coordination agents.
+ * Prevents accidentally staging all files (including manual edits).
+ * Specific file paths like "git add .overstory/sessions.db" remain allowed.
+ */
+export const COORDINATION_BLOCKED_GIT_ADD = [
+	"\\bgit\\s+add\\s+\\.$",
+	"\\bgit\\s+add\\s+-[aA]\\b",
+	"\\bgit\\s+add\\s+--all\\b",
+];
+
+/**
  * Bash commands that are always safe for non-implementation agents.
  * If a command starts with any of these prefixes, it bypasses the dangerous command check.
  * This whitelist is checked BEFORE the blocklist.
