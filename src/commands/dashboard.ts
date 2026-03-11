@@ -18,7 +18,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
-import { loadConfig } from "../config.ts";
+import { discoverChildProjects, loadConfig } from "../config.ts";
 import { ValidationError } from "../errors.ts";
 import { createEventStore } from "../events/store.ts";
 import { accent, brand, color, visibleLength } from "../logging/color.ts";
@@ -168,13 +168,15 @@ export interface DashboardStores {
 	mergeQueue: MergeQueue | null;
 	metricsStore: MetricsStore | null;
 	eventStore: EventStore | null;
+	/** Session stores for child projects (multi-project aggregation). */
+	childSessionStores: Array<{ root: string; store: SessionStore }>;
 }
 
 /**
  * Open all database connections needed by the dashboard.
  * Returns null handles for databases that do not exist on disk.
  */
-export function openDashboardStores(root: string): DashboardStores {
+export function openDashboardStores(root: string, childRoots: string[] = []): DashboardStores {
 	const overstoryDir = join(root, ".overstory");
 	const { store: sessionStore } = openSessionStore(overstoryDir);
 
@@ -218,7 +220,18 @@ export function openDashboardStores(root: string): DashboardStores {
 		// events db might not be openable
 	}
 
-	return { sessionStore, mailStore, mergeQueue, metricsStore, eventStore };
+	const childSessionStores: Array<{ root: string; store: SessionStore }> = [];
+	for (const childRoot of childRoots) {
+		try {
+			const childOvDir = join(childRoot, ".overstory");
+			const { store } = openSessionStore(childOvDir);
+			childSessionStores.push({ root: childRoot, store });
+		} catch {
+			// Skip child projects with inaccessible session stores
+		}
+	}
+
+	return { sessionStore, mailStore, mergeQueue, metricsStore, eventStore, childSessionStores };
 }
 
 /**
@@ -249,6 +262,13 @@ export function closeDashboardStores(stores: DashboardStores): void {
 		stores.eventStore?.close();
 	} catch {
 		/* best effort */
+	}
+	for (const child of stores.childSessionStores) {
+		try {
+			child.store.close();
+		} catch {
+			// Best effort
+		}
 	}
 }
 
@@ -365,6 +385,16 @@ async function loadDashboardData(
 	} catch {
 		// SQLite lock contention or I/O error — use last known sessions
 		allSessions = sessionDataCache?.sessions ?? [];
+	}
+
+	// Aggregate sessions from child projects
+	for (const child of stores.childSessionStores) {
+		try {
+			const childSessions = child.store.getAll();
+			allSessions.push(...childSessions);
+		} catch {
+			// Skip on SQLite errors
+		}
 	}
 
 	// Get worktrees and tmux sessions via cached subprocess helpers
@@ -1043,8 +1073,11 @@ async function executeDashboard(opts: DashboardOpts): Promise<void> {
 		runId = await readCurrentRunId(overstoryDir);
 	}
 
+	// Discover child projects for multi-project aggregation
+	const childRoots = await discoverChildProjects(root);
+
 	// Open stores once for the entire poll loop lifetime
-	const stores = openDashboardStores(root);
+	const stores = openDashboardStores(root, childRoots);
 
 	// Create rolling event buffer (persisted across poll ticks)
 	const eventBuffer = new EventBuffer(100);

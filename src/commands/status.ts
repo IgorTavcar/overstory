@@ -7,7 +7,7 @@
 
 import { join } from "node:path";
 import { Command } from "commander";
-import { loadConfig } from "../config.ts";
+import { discoverChildProjects, loadConfig } from "../config.ts";
 import { ValidationError } from "../errors.ts";
 import { jsonOutput } from "../json.ts";
 import { accent, color } from "../logging/color.ts";
@@ -122,6 +122,26 @@ export async function gatherStatus(
 		sessions = runId
 			? [...store.getByRun(runId), ...store.getAll().filter((s) => s.runId === null)]
 			: store.getAll();
+
+		// Aggregate sessions from child projects
+		const childRoots = await discoverChildProjects(root);
+		for (const childRoot of childRoots) {
+			try {
+				const childOvDir = join(childRoot, ".overstory");
+				const { store: childStore } = openSessionStore(childOvDir);
+				try {
+					const childSessions = childStore.getAll();
+					// Add child sessions (they may have different run IDs)
+					for (const cs of childSessions) {
+						sessions.push(cs);
+					}
+				} finally {
+					childStore.close();
+				}
+			} catch {
+				// Skip inaccessible child projects
+			}
+		}
 
 		const worktrees = await getCachedWorktrees(root);
 

@@ -739,6 +739,7 @@ test("DashboardStores type includes eventStore field", () => {
 		mergeQueue: null,
 		metricsStore: null,
 		eventStore: null,
+		childSessionStores: [],
 	};
 	expect(stores.eventStore).toBeNull();
 });
