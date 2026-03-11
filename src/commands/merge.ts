@@ -12,7 +12,7 @@
  */
 
 import { join } from "node:path";
-import { loadConfig } from "../config.ts";
+import { discoverChildProjects, loadConfig } from "../config.ts";
 import { MergeError, ValidationError } from "../errors.ts";
 import { jsonOutput } from "../json.ts";
 import { accent, printHint } from "../logging/color.ts";
@@ -270,6 +270,40 @@ async function handleAll(
 
 	const pendingEntries = queue.list("pending");
 
+	// Track which merge queue DB path owns each branch, so status updates
+	// go to the correct queue (main or child).
+	const branchQueuePath = new Map<string, string>();
+	const mainQueuePath = join(repoRoot, ".overstory", "merge-queue.db");
+	for (const entry of pendingEntries) {
+		branchQueuePath.set(entry.branchName, mainQueuePath);
+	}
+
+	// Also discover branches from child project merge queues.
+	// When a coordinator runs at workspace root and leads in sub-repos
+	// enqueue branches to their local merge-queue.db, the coordinator's
+	// `ov merge --all` should pick those up.
+	const childRoots = await discoverChildProjects(repoRoot);
+	for (const childRoot of childRoots) {
+		try {
+			const childQueuePath = join(childRoot, ".overstory", "merge-queue.db");
+			const childFile = Bun.file(childQueuePath);
+			if (await childFile.exists()) {
+				const childQueue = createMergeQueue(childQueuePath);
+				try {
+					const childPending = childQueue.list("pending");
+					for (const entry of childPending) {
+						branchQueuePath.set(entry.branchName, childQueuePath);
+					}
+					pendingEntries.push(...childPending);
+				} finally {
+					childQueue.close();
+				}
+			}
+		} catch {
+			// Skip inaccessible child merge queues
+		}
+	}
+
 	if (pendingEntries.length === 0) {
 		if (json) {
 			jsonOutput("merge", { results: [], count: 0 });
@@ -300,7 +334,22 @@ async function handleAll(
 	for (const entry of pendingEntries) {
 		const result = await resolver.resolve(entry, canonicalBranch, repoRoot);
 
-		queue.updateStatus(entry.branchName, result.success ? "merged" : "conflict", result.tier);
+		// Update status in the queue that owns this entry (main or child)
+		const queuePath = branchQueuePath.get(entry.branchName);
+		if (queuePath === mainQueuePath) {
+			queue.updateStatus(entry.branchName, result.success ? "merged" : "conflict", result.tier);
+		} else if (queuePath !== undefined) {
+			const childQueue = createMergeQueue(queuePath);
+			try {
+				childQueue.updateStatus(
+					entry.branchName,
+					result.success ? "merged" : "conflict",
+					result.tier,
+				);
+			} finally {
+				childQueue.close();
+			}
+		}
 
 		results.push(result);
 

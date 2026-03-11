@@ -8,7 +8,7 @@
 
 import { join } from "node:path";
 import { Command } from "commander";
-import { resolveProjectRoot } from "../config.ts";
+import { discoverChildProjects, resolveProjectRoot } from "../config.ts";
 import { ValidationError } from "../errors.ts";
 import { createEventStore } from "../events/store.ts";
 import { jsonOutput } from "../json.ts";
@@ -525,8 +525,45 @@ async function handleSend(opts: SendOpts, cwd: string): Promise<void> {
 	}
 }
 
+/**
+ * Collect unread messages from child project mail stores.
+ *
+ * When a coordinator runs at workspace root and leads run in sub-repos,
+ * those leads write messages (e.g. merge_ready) to their local mail.db.
+ * This function polls those child databases so the coordinator sees them.
+ *
+ * Messages are marked as read in the child stores to prevent re-delivery.
+ */
+async function collectChildMessages(
+	childRoots: string[],
+	agentName: string,
+): Promise<MailMessage[]> {
+	const messages: MailMessage[] = [];
+	for (const childRoot of childRoots) {
+		try {
+			const childDbPath = join(childRoot, ".overstory", "mail.db");
+			const childFile = Bun.file(childDbPath);
+			if (await childFile.exists()) {
+				const childStore = createMailStore(childDbPath);
+				try {
+					const childMessages = childStore.getUnread(agentName);
+					for (const msg of childMessages) {
+						childStore.markRead(msg.id);
+					}
+					messages.push(...childMessages);
+				} finally {
+					childStore.close();
+				}
+			}
+		} catch {
+			// Skip inaccessible child mail stores
+		}
+	}
+	return messages;
+}
+
 /** overstory mail check */
-async function handleCheck(opts: CheckOpts, cwd: string): Promise<void> {
+async function handleCheck(opts: CheckOpts, cwd: string, childRoots: string[]): Promise<void> {
 	const agent = opts.agent ?? "orchestrator";
 	const inject = opts.inject ?? false;
 	const json = opts.json ?? false;
@@ -554,6 +591,9 @@ async function handleCheck(opts: CheckOpts, cwd: string): Promise<void> {
 		}
 	}
 
+	// Collect messages from child project mail stores (cross-project polling)
+	const childMessages = await collectChildMessages(childRoots, agent);
+
 	const client = openClient(cwd);
 	try {
 		if (inject) {
@@ -570,8 +610,34 @@ async function handleCheck(opts: CheckOpts, cwd: string): Promise<void> {
 			if (output.length > 0) {
 				process.stdout.write(output);
 			}
+
+			// Inject child project messages (formatted the same way)
+			if (childMessages.length > 0) {
+				const childLines: string[] =
+					output.length === 0
+						? [
+								`You have ${childMessages.length} new message${childMessages.length === 1 ? "" : "s"} from child projects:`,
+								"",
+							]
+						: [];
+				for (const msg of childMessages) {
+					const priorityTag = msg.priority !== "normal" ? ` [${msg.priority.toUpperCase()}]` : "";
+					childLines.push(`--- From: ${msg.from}${priorityTag} (${msg.type}) ---`);
+					childLines.push(`Subject: ${msg.subject}`);
+					childLines.push(msg.body);
+					if (msg.payload !== null) {
+						childLines.push(`Payload: ${msg.payload}`);
+					}
+					childLines.push(`[Reply with: ov mail reply ${msg.id} --body "..."]`);
+					childLines.push("");
+				}
+				process.stdout.write(childLines.join("\n"));
+			}
 		} else {
 			const messages = client.check(agent);
+
+			// Merge child project messages into the result
+			messages.push(...childMessages);
 
 			if (json) {
 				jsonOutput("mail check", { messages });
@@ -711,6 +777,12 @@ export async function mailCommand(args: string[]): Promise<void> {
 	// resolve up to the main project root where .overstory/mail.db lives.
 	const root = await resolveProjectRoot(process.cwd());
 
+	// Discover child projects for cross-project mail polling.
+	// When a coordinator runs at workspace root and leads run in sub-repos,
+	// those leads write messages to their local mail.db. We discover those
+	// child projects once and pass them to the check handler.
+	const childRoots = await discoverChildProjects(root);
+
 	const program = new Command();
 	program.name("ov mail").description("Agent messaging system").exitOverride();
 
@@ -740,7 +812,7 @@ export async function mailCommand(args: string[]): Promise<void> {
 		.option("--debounce <ms>", "Debounce interval in milliseconds")
 		.exitOverride()
 		.action(async (opts: CheckOpts) => {
-			await handleCheck(opts, root);
+			await handleCheck(opts, root, childRoots);
 		});
 
 	program
