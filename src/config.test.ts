@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
 	clearWarningsSeen,
 	DEFAULT_CONFIG,
 	DEFAULT_QUALITY_GATES,
+	discoverChildProjects,
 	loadConfig,
 	resolveProjectRoot,
 	setProjectRootOverride,
@@ -1307,5 +1308,64 @@ describe("DEFAULT_CONFIG", () => {
 		expect(DEFAULT_QUALITY_GATES[0]?.name).toBe("Tests");
 		expect(DEFAULT_QUALITY_GATES[1]?.name).toBe("Lint");
 		expect(DEFAULT_QUALITY_GATES[2]?.name).toBe("Typecheck");
+	});
+});
+
+describe("discoverChildProjects", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "ov-discover-"));
+	});
+
+	afterEach(async () => {
+		await rm(tempDir, { recursive: true, force: true });
+	});
+
+	test("returns empty array when no child .overstory/ dirs exist", async () => {
+		const result = await discoverChildProjects(tempDir);
+		expect(result).toEqual([]);
+	});
+
+	test("discovers child projects one level deep", async () => {
+		await mkdir(join(tempDir, "child1", ".overstory"), { recursive: true });
+		await Bun.write(
+			join(tempDir, "child1", ".overstory", "config.yaml"),
+			"project:\n  name: child1\n",
+		);
+		await mkdir(join(tempDir, "child2", ".overstory"), { recursive: true });
+		await Bun.write(
+			join(tempDir, "child2", ".overstory", "config.yaml"),
+			"project:\n  name: child2\n",
+		);
+
+		const result = await discoverChildProjects(tempDir);
+		expect(result.sort()).toEqual([join(tempDir, "child1"), join(tempDir, "child2")]);
+	});
+
+	test("does not recurse beyond one level", async () => {
+		await mkdir(join(tempDir, "a", "b", ".overstory"), { recursive: true });
+		await Bun.write(
+			join(tempDir, "a", "b", ".overstory", "config.yaml"),
+			"project:\n  name: nested\n",
+		);
+
+		const result = await discoverChildProjects(tempDir);
+		expect(result).toEqual([]);
+	});
+
+	test("ignores hidden directories and node_modules", async () => {
+		await mkdir(join(tempDir, ".hidden", ".overstory"), { recursive: true });
+		await Bun.write(join(tempDir, ".hidden", ".overstory", "config.yaml"), "x: 1\n");
+		await mkdir(join(tempDir, "node_modules", "pkg", ".overstory"), { recursive: true });
+		await Bun.write(join(tempDir, "node_modules", "pkg", ".overstory", "config.yaml"), "x: 1\n");
+
+		const result = await discoverChildProjects(tempDir);
+		expect(result).toEqual([]);
+	});
+
+	test("handles non-existent root gracefully", async () => {
+		const result = await discoverChildProjects("/tmp/does-not-exist-ov-test");
+		expect(result).toEqual([]);
 	});
 });

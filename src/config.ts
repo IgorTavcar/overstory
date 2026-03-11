@@ -1,3 +1,4 @@
+import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { ConfigError, ValidationError } from "./errors.ts";
 import type {
@@ -976,4 +977,35 @@ export async function loadConfig(projectRoot: string): Promise<OverstoryConfig> 
 	validateConfig(merged);
 
 	return merged;
+}
+
+/**
+ * Discover child projects that have their own .overstory/ directories.
+ * Scans one level deep under `root` for directories containing .overstory/config.yaml.
+ * Skips hidden directories, node_modules, and the root's own .overstory/.
+ *
+ * Used by multi-project commands (dashboard, status, mail check, merge) to
+ * aggregate data from sub-repos when a coordinator runs at the workspace root.
+ */
+export async function discoverChildProjects(root: string): Promise<string[]> {
+	const children: string[] = [];
+	let entries: import("node:fs").Dirent[];
+	try {
+		entries = await readdir(root, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+
+		const childConfigPath = join(root, entry.name, ".overstory", "config.yaml");
+		const file = Bun.file(childConfigPath);
+		if (await file.exists()) {
+			children.push(join(root, entry.name));
+		}
+	}
+
+	return children;
 }
