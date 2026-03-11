@@ -41,6 +41,9 @@ export class OpenCodeRuntime implements AgentRuntime {
 	/** Unique identifier for this runtime. */
 	readonly id = "opencode";
 
+	/** Stability level. OpenCode adapter is experimental — not fully validated. */
+	readonly stability = "experimental" as const;
+
 	/**
 	 * Relative path to the instruction file within a worktree.
 	 *

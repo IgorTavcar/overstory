@@ -35,6 +35,9 @@ export class PiRuntime implements AgentRuntime {
 	/** Unique identifier for this runtime. */
 	readonly id = "pi";
 
+	/** Stability level. Pi adapter is experimental — not fully validated. */
+	readonly stability = "experimental" as const;
+
 	/** Relative path to the instruction file within a worktree. Pi reads .claude/CLAUDE.md natively. */
 	readonly instructionPath = ".claude/CLAUDE.md";
 

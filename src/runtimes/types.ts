@@ -19,6 +19,8 @@ export interface SpawnOpts {
 	appendSystemPromptFile?: string;
 	/** Working directory for the spawned process. */
 	cwd: string;
+	/** Additional directories that the runtime may need to write outside cwd. */
+	sharedWritableDirs?: string[];
 	/** Additional environment variables to pass to the spawned process. */
 	env: Record<string, string>;
 }
@@ -146,6 +148,9 @@ export interface AgentEvent {
 export interface AgentRuntime {
 	/** Unique runtime identifier (e.g. "claude", "codex", "pi"). */
 	id: string;
+
+	/** Stability level of this runtime adapter. */
+	readonly stability: "stable" | "beta" | "experimental";
 
 	/** Relative path to the instruction file within a worktree (e.g. ".claude/CLAUDE.md"). */
 	readonly instructionPath: string;

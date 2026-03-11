@@ -178,15 +178,16 @@ Overstory uses instruction overlays and tool-call guards to turn agent sessions 
 
 Overstory is runtime-agnostic. The `AgentRuntime` interface (`src/runtimes/types.ts`) defines the contract — each adapter handles spawning, config deployment, guard enforcement, readiness detection, and transcript parsing for its runtime. Set the default in `config.yaml` or override per-agent with `ov sling --runtime <name>`.
 
-| Runtime | CLI | Guard Mechanism | Status |
-|---------|-----|-----------------|--------|
+| Runtime | CLI | Guard Mechanism | Stability |
+|---------|-----|-----------------|-----------|
 | Claude Code | `claude` | `settings.local.json` hooks | Stable |
-| Pi | `pi` | `.pi/extensions/` guard extension | Active development |
-| Copilot | `copilot` | (none — `--allow-all-tools`) | Active development |
-| Cursor | `agent` | (none — `--yolo`) | Active development |
-| Codex | `codex` | OS-level sandbox (Seatbelt/Landlock) | Active development |
-| Gemini | `gemini` | `--sandbox` flag | Active development |
-| Sapling | `sp` | `.sapling/guards.json` | Active development |
+| Sapling | `sp` | `.sapling/guards.json` | Stable |
+| Pi | `pi` | `.pi/extensions/` guard extension | Experimental |
+| Copilot | `copilot` | (none — `--allow-all-tools`) | Experimental |
+| Cursor | `agent` | (none — `--yolo`) | Experimental |
+| Codex | `codex` | OS-level sandbox (Seatbelt/Landlock) | Experimental |
+| Gemini | `gemini` | `--sandbox` flag | Experimental |
+| OpenCode | `opencode` | (none) | Experimental |
 
 ## How It Works
 
@@ -286,7 +287,7 @@ overstory/
     metrics/                      SQLite metrics + pricing + transcript parsing
     doctor/                       Health check modules (11 checks)
     insights/                     Session insight analyzer for auto-expertise
-    runtimes/                     AgentRuntime abstraction (registry + adapters: Claude, Pi, Copilot, Codex, Gemini, Sapling, OpenCode)
+    runtimes/                     AgentRuntime abstraction (registry + adapters: Claude, Pi, Copilot, Codex, Gemini, Sapling, OpenCode, Cursor)
     tracker/                      Pluggable task tracker (beads + seeds backends)
     mulch/                        mulch client (programmatic API + CLI wrapper)
     e2e/                          End-to-end lifecycle tests

@@ -40,7 +40,13 @@ import { openSessionStore } from "../sessions/compat.ts";
 import type { SessionStore } from "../sessions/store.ts";
 import { createTrackerClient, resolveBackend } from "../tracker/factory.ts";
 import type { TrackerIssue } from "../tracker/types.ts";
-import type { EventStore, MailMessage, OverstoryConfig, StoredEvent } from "../types.ts";
+import type {
+	AgentSession,
+	EventStore,
+	MailMessage,
+	OverstoryConfig,
+	StoredEvent,
+} from "../types.ts";
 import { evaluateHealth } from "../watchdog/health.ts";
 import { isProcessAlive } from "../worktree/tmux.ts";
 import { getCachedTmuxSessions, getCachedWorktrees, type StatusData } from "./status.ts";
@@ -296,6 +302,14 @@ interface TrackerCache {
 let trackerCache: TrackerCache | null = null;
 const TRACKER_CACHE_TTL_MS = 10_000; // 10 seconds
 
+/** Session data cached between ticks — stale-on-error fallback. */
+interface SessionDataCache {
+	sessions: AgentSession[];
+}
+
+/** Module-level session cache (persists across poll ticks, used as fallback on SQLite errors). */
+let sessionDataCache: SessionDataCache | null = null;
+
 interface DashboardData {
 	currentRunId?: string | null;
 	status: StatusData;
@@ -340,8 +354,15 @@ async function loadDashboardData(
 	eventBuffer?: EventBuffer,
 	runtimeConfig?: OverstoryConfig["runtime"],
 ): Promise<DashboardData> {
-	// Get all sessions from the pre-opened session store
-	const allSessions = stores.sessionStore.getAll();
+	// Get all sessions from the pre-opened session store — fall back to cache on SQLite errors.
+	let allSessions: AgentSession[];
+	try {
+		allSessions = stores.sessionStore.getAll();
+		sessionDataCache = { sessions: allSessions };
+	} catch {
+		// SQLite lock contention or I/O error — use last known sessions
+		allSessions = sessionDataCache?.sessions ?? [];
+	}
 
 	// Get worktrees and tmux sessions via cached subprocess helpers
 	const worktrees = await getCachedWorktrees(root);
@@ -350,18 +371,22 @@ async function loadDashboardData(
 	// Evaluate health for active agents using the same logic as the watchdog.
 	const tmuxSessionNames = new Set(tmuxSessions.map((s) => s.name));
 	const healthThresholds = thresholds ?? { staleMs: 300_000, zombieMs: 600_000 };
-	for (const session of allSessions) {
-		if (session.state === "completed") continue;
-		const tmuxAlive = tmuxSessionNames.has(session.tmuxSession);
-		const check = evaluateHealth(session, tmuxAlive, healthThresholds);
-		if (check.state !== session.state) {
-			try {
-				stores.sessionStore.updateState(session.agentName, check.state);
-				session.state = check.state;
-			} catch {
-				// Best effort: don't fail dashboard if update fails
+	try {
+		for (const session of allSessions) {
+			if (session.state === "completed") continue;
+			const tmuxAlive = tmuxSessionNames.has(session.tmuxSession);
+			const check = evaluateHealth(session, tmuxAlive, healthThresholds);
+			if (check.state !== session.state) {
+				try {
+					stores.sessionStore.updateState(session.agentName, check.state);
+					session.state = check.state;
+				} catch {
+					// Best effort: don't fail dashboard if update fails
+				}
 			}
 		}
+	} catch {
+		// Best effort: evaluateHealth loop should not crash the dashboard
 	}
 
 	// If run-scoped, filter agents to only those belonging to the current run.
@@ -1038,17 +1063,33 @@ async function executeDashboard(opts: DashboardOpts): Promise<void> {
 		process.exit(0);
 	});
 
-	// Poll loop
+	// Poll loop — errors are caught per-tick so transient DB failures never crash the dashboard.
+	let lastGoodData: DashboardData | null = null;
+	let lastErrorMsg: string | null = null;
 	while (running) {
-		const data = await loadDashboardData(
-			root,
-			stores,
-			runId,
-			thresholds,
-			eventBuffer,
-			config.runtime,
-		);
-		renderDashboard(data, interval);
+		try {
+			const data = await loadDashboardData(
+				root,
+				stores,
+				runId,
+				thresholds,
+				eventBuffer,
+				config.runtime,
+			);
+			lastGoodData = data;
+			lastErrorMsg = null;
+			renderDashboard(data, interval);
+		} catch (err) {
+			// Render last good frame so the TUI stays alive, then show the error inline.
+			if (lastGoodData) {
+				renderDashboard(lastGoodData, interval);
+			}
+			lastErrorMsg = err instanceof Error ? err.message : String(err);
+			const w = process.stdout.columns ?? 100;
+			const h = process.stdout.rows ?? 30;
+			const errLine = `${CURSOR.cursorTo(h, 1)}\x1b[31m⚠ DB error (retrying):\x1b[0m ${truncate(lastErrorMsg, w - 30)}`;
+			process.stdout.write(errLine);
+		}
 		await Bun.sleep(interval);
 	}
 }
