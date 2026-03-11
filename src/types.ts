@@ -37,6 +37,17 @@ export interface PiRuntimeConfig {
 /** Backend for the task tracker. Defined here for use in OverstoryConfig. */
 export type TaskTrackerBackend = "auto" | "seeds" | "beads";
 
+// === Workflow ===
+
+/** Workflow profile determines orchestration posture. */
+export type WorkflowProfile = "delivery" | "co-creation";
+
+/** Workflow configuration section. */
+export interface WorkflowConfig {
+	/** Which workflow profile to use. "delivery" = autonomous, "co-creation" = human gates. */
+	profile: WorkflowProfile;
+}
+
 // === Project Configuration ===
 
 /**
@@ -137,6 +148,8 @@ export interface OverstoryConfig {
 		 */
 		shellInitDelayMs?: number;
 	};
+	/** Workflow profile controlling orchestration posture. */
+	workflow?: WorkflowConfig;
 }
 
 // === Agent Manifest ===
@@ -224,7 +237,8 @@ export type MailProtocolType =
 	| "escalation"
 	| "health_check"
 	| "dispatch"
-	| "assign";
+	| "assign"
+	| "decision_gate";
 
 /** All valid mail message types. */
 export type MailMessageType = MailSemanticType | MailProtocolType;
@@ -243,6 +257,7 @@ export const MAIL_MESSAGE_TYPES: readonly MailMessageType[] = [
 	"health_check",
 	"dispatch",
 	"assign",
+	"decision_gate",
 ] as const;
 
 export interface MailMessage {
@@ -327,6 +342,15 @@ export interface AssignPayload {
 	branch: string;
 }
 
+/** Lead or coordinator gates a decision, requesting approval or escalating to operator. */
+export interface DecisionGatePayload {
+	taskId: string;
+	decision: "approved" | "rejected" | "escalate_to_operator";
+	rationale: string;
+	conditionsMet: Record<string, boolean>;
+	requiresHumanInput?: boolean;
+}
+
 /** Maps protocol message types to their payload interfaces. */
 export interface MailPayloadMap {
 	worker_done: WorkerDonePayload;
@@ -337,6 +361,7 @@ export interface MailPayloadMap {
 	health_check: HealthCheckPayload;
 	dispatch: DispatchPayload;
 	assign: AssignPayload;
+	decision_gate: DecisionGatePayload;
 }
 
 // === Overlay ===

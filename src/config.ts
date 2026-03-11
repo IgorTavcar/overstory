@@ -6,6 +6,7 @@ import type {
 	OverstoryConfig,
 	QualityGate,
 	TaskTrackerBackend,
+	WorkflowProfile,
 } from "./types.ts";
 
 // Module-level project root override (set by --project global flag)
@@ -112,6 +113,9 @@ export const DEFAULT_CONFIG: OverstoryConfig = {
 				haiku: "anthropic/claude-haiku-4-5",
 			},
 		},
+	},
+	workflow: {
+		profile: "delivery" as WorkflowProfile,
 	},
 };
 
@@ -792,6 +796,17 @@ function validateConfig(config: OverstoryConfig): void {
 					},
 				);
 			}
+		}
+	}
+
+	// Validate workflow config
+	if (config.workflow?.profile !== undefined) {
+		const validProfiles = ["delivery", "co-creation"];
+		if (!validProfiles.includes(config.workflow.profile)) {
+			throw new ValidationError(`workflow.profile must be one of: ${validProfiles.join(", ")}`, {
+				field: "workflow.profile",
+				value: config.workflow.profile,
+			});
 		}
 	}
 }

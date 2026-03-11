@@ -1311,6 +1311,63 @@ describe("DEFAULT_CONFIG", () => {
 	});
 });
 
+describe("workflow config", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "overstory-test-"));
+		await mkdir(join(tempDir, ".overstory"), { recursive: true });
+	});
+
+	afterEach(async () => {
+		await cleanupTempDir(tempDir);
+	});
+
+	async function writeConfig(yaml: string): Promise<void> {
+		await Bun.write(join(tempDir, ".overstory", "config.yaml"), yaml);
+	}
+
+	test("defaults to delivery profile", () => {
+		expect(DEFAULT_CONFIG.workflow).toEqual({ profile: "delivery" });
+	});
+
+	test("parses workflow.profile from config.yaml", async () => {
+		await writeConfig(`
+workflow:
+  profile: co-creation
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.workflow?.profile).toBe("co-creation");
+	});
+
+	test("accepts delivery profile", async () => {
+		await writeConfig(`
+workflow:
+  profile: delivery
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.workflow?.profile).toBe("delivery");
+	});
+
+	test("rejects invalid workflow profile", async () => {
+		await writeConfig(`
+workflow:
+  profile: invalid-profile
+`);
+		await expect(loadConfig(tempDir)).rejects.toThrow(ValidationError);
+	});
+
+	test("rejects invalid workflow profile with correct message", async () => {
+		await writeConfig(`
+workflow:
+  profile: yolo
+`);
+		await expect(loadConfig(tempDir)).rejects.toThrow(
+			"workflow.profile must be one of: delivery, co-creation",
+		);
+	});
+});
+
 describe("discoverChildProjects", () => {
 	let tempDir: string;
 
